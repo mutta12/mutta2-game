@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CRASH RIDE</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- 物理演算エンジン Matter.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="stage">
+      <canvas id="game" width="960" height="540"></canvas>
+
+      <!-- プレイ中の表示 -->
+      <div id="hud">
+        <div>TIME <span id="time">0.00</span>s</div>
+        <div>DISTANCE <span id="distance">0</span>m</div>
+        <div>DEATHS <span id="deaths">0</span></div>
+        <div>CP <span id="checkpoint">0/3</span></div>
+        <button id="pause-btn" title="一時停止 (P)">II</button>
+      </div>
+
+      <!-- チェックポイントなどのお知らせ -->
+      <div id="toast" class="hidden"></div>
+
+      <!-- タイトル・死亡・クリアで使う画面 -->
+      <div id="overlay">
+        <h1 id="overlay-title">CRASH RIDE</h1>
+        <div id="overlay-body"></div>
+        <div id="overlay-buttons"></div>
+      </div>
+    </div>
+
+    <p class="help">
+      <b>→ / D</b> 前進　<b>← / A</b> 後退　<b>↑ / W</b> 後ろに傾ける　<b>↓ / S</b> 前に傾ける　<b>Space</b> ブレーキ　<b>R</b> 最初から　<b>Enter</b> チェックポイントから　<b>P</b> 一時停止
+    </p>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
