@@ -218,6 +218,105 @@ canvas {
   line-height: 1.4;
 }
 
+/* 今のステージ名 */
+#hud #stage-pill {
+  color: #fff;
+  background: rgba(29, 36, 64, 0.85);
+}
+
+#hud #stage-pill span {
+  color: #ffd23f;
+}
+
+/* 死亡画面のひとこと（ステージごと） */
+#overlay-body .quip {
+  font-size: 22px;
+  font-weight: bold;
+  color: #ffd23f;
+}
+
+#overlay-body .new {
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 13px;
+  color: #1d2440;
+  background: #ffd23f;
+  border-radius: 10px;
+}
+
+/* 日本全国チャレンジ（都道府県えらび） */
+#overlay.prefs {
+  justify-content: flex-start;
+}
+
+#overlay.prefs h1 {
+  margin-bottom: 4px;
+  font-size: clamp(28px, 5vw, 44px);
+}
+
+#overlay.prefs #overlay-body {
+  margin-bottom: 10px;
+}
+
+#regions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.region {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.region-name {
+  flex: 0 0 84px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #ffd23f;
+}
+
+.prefs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+#overlay .prefs-row button.pref {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 70px;
+  padding: 3px 2px;
+  font-size: 13px;
+  line-height: 1.25;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+#overlay .prefs-row button.pref span {
+  font-size: 9px;
+  font-weight: normal;
+}
+
+#overlay .prefs-row button.pref.open {
+  color: #1d2440;
+  background: #ffd23f;
+  box-shadow: 0 3px 0 #c99a12;
+}
+
+#overlay .prefs-row button.pref.soon {
+  color: #8d93b5;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: default;
+}
+
+#overlay .prefs-row button.pref.soon:hover {
+  filter: none;
+}
+
 #overlay-buttons {
   display: flex;
   flex-wrap: wrap;

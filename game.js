@@ -104,7 +104,7 @@ const CAT = { GROUND: 0x0001, BIKE: 0x0002, RIDER: 0x0004, MOVER: 0x0008, DEBRIS
 // ---------- コース ----------
 // lands：地面の表面の点（左から右へ）。点と点の間を、回転させた長方形で作る
 // 平らな道は少なめにして、ギミックを次々に並べている
-const COURSE = {
+const MAIN_COURSE = {
   startX: 120,
   goalX: 11750,
   fakeGoalX: 7950,   // ニセのゴール（ここでゴールしたと思って止まると、下の足場が抜ける）
@@ -216,6 +216,51 @@ const COURSE = {
   ],
 };
 
+// ---------- ステージ ----------
+// メインコースも、都道府県ステージ（stages.js）と同じしくみで管理する
+STAGES.main = {
+  name: "CRASH RIDE",
+  sub: "トラップだらけのメインコース",
+  course: MAIN_COURSE,
+  death: { title: "YOU DIED" },
+  clear: { title: "CLEAR!", line: "ゴールしました！" },
+};
+
+// テーマで色を書いていないところは、メインコースと同じ色になる
+const DEFAULT_THEME = {
+  sky: ["#5ec8ff", "#d8f3ff"],
+  sun: "#fff3a6",
+  mountains: "#a9dcb6",
+  hills: "#8fd18f",
+  buildings: ["#7f8fb8", "#8e9cc4", "#7486b0"],
+  windows: ["rgba(255,255,210,0.6)"],
+  soil: "#a0673a",
+  stripe: "rgba(0,0,0,0.08)",
+  grass: "#47b84a",
+  ramp: { fill: "#ffb627", stroke: "#5c3a12" },
+  far: null,
+};
+
+// コースに書いていない部品は「なし」にする
+const COURSE_KEYS = [
+  "lands", "ramps", "walls", "checkpoints", "saws", "movingSaws", "spikes", "hammers", "platforms",
+  "crumbles", "pads", "seesaws", "boulders", "signs", "mines", "crushers", "popSpikes", "cannons",
+  "water",
+];
+for (const id in STAGES) {
+  const st = STAGES[id];
+  for (const key of COURSE_KEYS) if (!st.course[key]) st.course[key] = [];
+  st.theme = { ...DEFAULT_THEME, ...st.theme };
+  st.decor = st.decor || [];
+  st.death = st.death || { title: "YOU DIED" };
+  st.clear = st.clear || { title: "CLEAR!", line: "ゴールしました！" };
+}
+
+let stageId = "main";
+let stage = STAGES.main;
+let COURSE = MAIN_COURSE;
+let menu = "title";   // タイトル画面で今どのメニューを出しているか（"title" / "prefs"）
+
 // ---------- Matter.js の準備 ----------
 const { Engine, Bodies, Body, Composite, Constraint, Events, Query } = window.Matter || {};
 
@@ -237,6 +282,7 @@ let cannons;         // 大砲
 let cannonBalls;     // 飛んでいる砲弾
 let blasts;          // 爆発の光（描画用）
 let fakeGoalPassed = false;
+const popups = [];   // 「なんでやねん!」などの、浮かんで消える文字
 let padTimer = 0;    // ジャンプパッドが続けて反応しないようにする時間
 let hits;            // 物理演算中に起きた衝突（あとでまとめて処理する）
 
@@ -346,6 +392,9 @@ const sfx = {
   die() { this.tone(400, 0.6, "sawtooth", 0.08, 60); this.noise(0.4, 0.3, 500); },
   checkpoint() { this.tone(660, 0.12, "square", 0.06); setTimeout(() => this.tone(990, 0.2, "square", 0.06), 120); },
   beep() { this.tone(1800, 0.07, "square", 0.06); },
+  zukko() { this.tone(900, 0.7, "sine", 0.12, 110); },                                   // ズコー
+  slap() { this.noise(0.12, 0.35, 3000); this.tone(1300, 0.06, "square", 0.05, 500); },   // パシーン
+  splash() { this.noise(0.7, 0.35, 1400); this.tone(300, 0.4, "sine", 0.06, 80); },
   explode() { this.noise(0.9, 0.45, 350); this.tone(90, 0.6, "sawtooth", 0.12, 30); },
   cannon() { this.noise(0.3, 0.3, 250); this.tone(160, 0.25, "triangle", 0.12, 50); },
   pop() { this.tone(500, 0.12, "sawtooth", 0.08, 1500); },
@@ -434,33 +483,45 @@ function createCourse() {
     movers.push(saw);
   }
 
-  // 巨大ハンマー・振り子ノコギリ
+  // 巨大ハンマー・振り子ノコギリ・ハリセン
+  //   motion: "slap" は、ふり上げて待ってから一気にたたきおろす動き（ツッコミ）
   for (const h of COURSE.hammers) {
     const isSaw = h.kind === "saw";
     const shape = isSaw
       ? Bodies.circle(h.x, h.y + h.len, h.r, { density: 0.05 })
-      : Bodies.rectangle(h.x, h.y + h.len, 54, 74, { density: 0.05 });
+      : h.kind === "harisen"
+        ? Bodies.rectangle(h.x, h.y + h.len, 80, 36, { density: 0.05 })
+        : Bodies.rectangle(h.x, h.y + h.len, 54, 74, { density: 0.05 });
     const hammer = makeMover(shape, t => {
-      const a = Math.sin((t / h.period) * Math.PI * 2 + h.phase) * h.amp;
+      const a = h.motion === "slap"
+        ? slapAngle(((t + h.phase) % h.period + h.period) % h.period, h.period)
+        : Math.sin((t / h.period) * Math.PI * 2 + h.phase) * h.amp;
       return { x: h.x + Math.sin(a) * h.len, y: h.y + Math.cos(a) * h.len, angle: -a };
     });
     hammer.hazard = isSaw ? "saw" : "hammer";
+    hammer.kind = h.kind;
     hammer.radius = h.r;
     hammer.pivot = { x: h.x, y: h.y };
     hammer.len = h.len;
+    hammer.deathText = h.death;
+    hammer.ejectText = h.eject;
+    if (h.motion === "slap") hammer.slap = { period: h.period, phase: h.phase, last: 0 };
     movers.push(hammer);
   }
 
-  // 動く足場（axis: "y" なら上下に動くエレベーター）
+  // 動く足場（axis: "y" なら上下に動くエレベーター、motion: "droptower" ならフリーフォール）
   for (const p of COURSE.platforms) {
-    const platform = makeMover(Bodies.rectangle(p.x, p.y, p.w, p.h, { density: 0.05, friction: 1 }), t => {
+    const startY = p.motion === "droptower" ? p.bottom : p.y;
+    const platform = makeMover(Bodies.rectangle(p.x, startY, p.w, p.h, { density: 0.05, friction: 1 }), t => {
+      if (p.motion === "droptower") return { x: p.x, y: dropTowerY(p, t), angle: 0 };
       const s = Math.sin((t / p.period) * Math.PI * 2) * p.amp;
       return p.axis === "y" ? { x: p.x, y: p.y + s, angle: 0 } : { x: p.x + s, y: p.y, angle: 0 };
     });
     platform.isPlatform = true;
     platform.w = p.w;
     platform.h = p.h;
-    platform.axis = p.axis || "x";
+    platform.axis = p.motion === "droptower" ? "drop" : p.axis || "x";
+    if (p.motion === "droptower") platform.tower = p;
     movers.push(platform);
   }
 
@@ -496,7 +557,7 @@ function createCourse() {
     for (let i = 0; i < c.pieces; i++) {
       const piece = Bodies.rectangle(c.x1 + w * (i + 0.5), c.y + 10, w - 2, 20, { friction: 1, density: 0.004 });
       Body.setStatic(piece, true);   // あとで落とせるように、いったん動かないボディにする
-      piece.crumble = { delay: c.delay, timer: -1, fake: c.fake };
+      piece.crumble = { delay: c.delay, timer: -1, fake: c.fake, style: c.style };
       piece.w = w - 2;
       crumbles.push(piece);
     }
@@ -504,7 +565,8 @@ function createCourse() {
 
   // プレス機：trigger をこえたら落ちてきて、そのあとは上下をくりかえす
   for (const c of COURSE.crushers) {
-    const trap = { triggerAt: null, trigger: c.trigger, sound: "slam", period: c.period, lastPhase: 0 };
+    // auto: true なら、自転車が来なくても最初から動いている（phase 秒ずらして動き始める）
+    const trap = { triggerAt: c.auto ? c.phase : null, trigger: c.trigger, sound: "slam", period: c.period, lastPhase: 0 };
     const floor = groundY(c.x);
     const crusher = makeMover(Bodies.rectangle(c.x, c.top - c.h / 2, c.w, c.h, { density: 0.05, friction: 1 }), t => {
       let k = 0;   // 0 = 一番上、1 = 地面まで下りた
@@ -520,6 +582,8 @@ function createCourse() {
       return { x: c.x + shakeX, y: bottom - c.h / 2, angle: 0 };
     });
     crusher.hazard = "crusher";
+    crusher.kind = c.kind;
+    crusher.deathText = c.death;
     crusher.w = c.w;
     crusher.h = c.h;
     crusher.trap = trap;
@@ -528,12 +592,13 @@ function createCourse() {
 
   // 飛び出すトゲ：ふだんは地面の中にかくれている
   for (const sp of COURSE.popSpikes) {
-    const trap = { triggerAt: null, trigger: sp.trigger, sound: "pop" };
+    // period があるときは、自転車が来なくても period 秒ごとに飛び出す
+    const trap = { triggerAt: sp.period ? 0 : null, trigger: sp.trigger, sound: "pop" };
     const floor = groundY(sp.x);
     const spike = makeMover(Bodies.rectangle(sp.x, floor + sp.h / 2 + 6, sp.w, sp.h, { density: 0.05 }), t => {
       let k = 0;   // 0 = かくれている、1 = 飛び出している
       if (trap.triggerAt !== null) {
-        const p = t - trap.triggerAt;
+        const p = sp.period ? ((t + sp.phase) % sp.period + sp.period) % sp.period : t - trap.triggerAt;
         if (p < 0) k = 0;
         else if (p < 0.08) k = p / 0.08;
         else if (p < sp.up) k = 1;
@@ -543,6 +608,9 @@ function createCourse() {
     });
     spike.hazard = "spike";
     spike.dir = "pop";
+    spike.style = sp.style;
+    spike.deathText = sp.death;
+    spike.ejectText = sp.eject;
     spike.w = sp.w;
     spike.h = sp.h;
     spike.floor = floor;
@@ -568,6 +636,111 @@ function createCourse() {
 
   solidBodies = [...groundBodies, ...movers, ...crumbles, ...seesaws];
   Composite.add(engine.world, solidBodies);
+}
+
+// フリーフォールの高さ（床の中心の y）
+//   下で待つ → ゆっくり上がる → 上で止まる（最後はガタガタ揺れる）→ 重力より速く落ちる
+const DROP_WAIT = 1.2;
+const DROP_RISE = 3.4;
+const DROP_TOP = 1.3;
+const DROP_FALL = 0.55;
+function dropTowerY(p, t) {
+  const q = ((t + (p.phase || 0)) % p.period + p.period) % p.period;
+  if (q < DROP_WAIT) return p.bottom;
+  if (q < DROP_WAIT + DROP_RISE) {
+    const k = (q - DROP_WAIT) / DROP_RISE;
+    return p.bottom + (p.top - p.bottom) * (0.5 - Math.cos(k * Math.PI) / 2);
+  }
+  if (q < DROP_WAIT + DROP_RISE + DROP_TOP) {
+    const left = DROP_WAIT + DROP_RISE + DROP_TOP - q;
+    return p.top + (left < 0.4 ? Math.sin(q * 70) * 2 : 0);
+  }
+  if (q < DROP_WAIT + DROP_RISE + DROP_TOP + DROP_FALL) {
+    const k = (q - DROP_WAIT - DROP_RISE - DROP_TOP) / DROP_FALL;
+    return p.top + (p.bottom - p.top) * k * k;
+  }
+  return p.bottom;
+}
+
+// ハリセン（ツッコミ）の角度。p は 0〜period の時間
+//   ふり上げて待つ → 一気にたたきおろす → 少し止まる → ゆっくりもどる
+const SLAP_UP = 1.6;
+const SLAP_DOWN = -0.25;
+const SLAP_START = 1.1;
+function slapAngle(p, period) {
+  if (p < SLAP_START) return SLAP_UP + Math.sin(p * 9) * 0.03;
+  if (p < SLAP_START + 0.18) return SLAP_UP + (SLAP_DOWN - SLAP_UP) * ((p - SLAP_START) / 0.18) ** 2;
+  if (p < SLAP_START + 0.5) return SLAP_DOWN;
+  const k = Math.min(1, (p - SLAP_START - 0.5) / (period - SLAP_START - 0.5));
+  return SLAP_DOWN + (SLAP_UP - SLAP_DOWN) * (1 - (1 - k) ** 2);
+}
+
+// ハリセンをふりおろすときに「なんでやねん!」
+function updateSlaps() {
+  for (const m of movers) {
+    if (!m.slap) continue;
+    const { period, phase } = m.slap;
+    const p = ((simTime + phase) % period + period) % period;
+    if (m.slap.last < SLAP_START && p >= SLAP_START && Math.abs(m.pivot.x - camera.x) < 650) {
+      addPopup(m.pivot.x + 40, m.pivot.y - 30, "なんでやねん!", "#ffd23f", 24);
+      sfx.slap();
+    }
+    m.slap.last = p;
+  }
+}
+
+// 浮かんで消える文字を出す
+function addPopup(x, y, text, color, size) {
+  popups.push({ x, y, text, color, size, life: 1.6, age: 0 });
+}
+
+// 水：入ると動きがにぶくなって、ゆっくりしずむ。自転車か人が落ちたら死亡
+function checkWater() {
+  const { chassis, torso } = bike;
+  for (const w of COURSE.water) {
+    for (const b of [...bike.bikeBodies, bike.crank, ...bike.riderParts]) {
+      if (b.position.x > w.x1 && b.position.x < w.x2 && b.position.y > w.y) {
+        Body.setVelocity(b, { x: b.velocity.x * 0.9, y: b.velocity.y * 0.85 });
+      }
+    }
+    if (dead || (state !== "playing" && state !== "down")) continue;
+    for (const b of [chassis, torso]) {
+      if (b.position.x > w.x1 && b.position.x < w.x2 && b.position.y > w.y + 12) {
+        splash(b.position.x, w.y);
+        dead = true;
+        eject(w.death || "水に落ちた！", { x: 0, y: 1 }, 0);
+        deathCause = w.death || "水に落ちた！";
+        slowTimer = SLOWMO_TIME;
+        stageDeathEffect({ x: b.position.x, y: w.y });
+        return;
+      }
+    }
+  }
+}
+
+// 水しぶき
+function splash(x, y) {
+  sfx.splash();
+  shake(0.3, 6);
+  for (let i = 0; i < 50; i++) {
+    if (blood.length >= MAX_BLOOD) blood.shift();
+    blood.push({
+      x: x + (Math.random() - 0.5) * 40, y,
+      vx: (Math.random() - 0.5) * 8, vy: -3 - Math.random() * 9,
+      r: 2 + Math.random() * 3, life: 0.8 + Math.random() * 0.6,
+      color: ["#d6f1ff", "#8fd3ff", "#ffffff"][i % 3], spark: true,
+    });
+  }
+}
+
+// その県だけの死亡演出（大阪なら「なんでやねん!!」とズコー）
+function stageDeathEffect(point) {
+  const d = stage.death;
+  if (d.bubbles) {
+    const text = d.bubbles[Math.floor(Math.random() * d.bubbles.length)];
+    addPopup(point.x, point.y - 50, text, "#ffffff", 40);
+  }
+  if (d.sound && sfx[d.sound]) setTimeout(() => sfx[d.sound](), 250);
 }
 
 // 自転車が trigger をこえたら、プレス機・飛び出すトゲを動かし始める
@@ -698,6 +871,8 @@ function fireCannon(c, target) {
   });
   body.hazard = "cannonball";
   body.radius = c.r;
+  body.kind = c.kind;
+  body.deathText = c.death;
   Body.setVelocity(body, { x: vx, y: vy });
   Composite.add(engine.world, body);
   cannonBalls.push({ body, life: 5 });
@@ -716,6 +891,7 @@ function fireCannon(c, target) {
 
 // ニセのゴール：通りすぎたらお知らせ（すぐ先の床が抜ける）
 function checkFakeGoal() {
+  if (COURSE.fakeGoalX === undefined) return;
   if (!fakeGoalPassed && state === "playing" && bike.chassis.position.x > COURSE.fakeGoalX) {
     fakeGoalPassed = true;
     sfx.goal();
@@ -733,6 +909,7 @@ function updateBoulders() {
       });
       b.body.hazard = "boulder";
       b.body.radius = b.r;
+      b.body.deathText = b.death;
       Body.setVelocity(b.body, { x: b.vx, y: 0 });
       Composite.add(engine.world, b.body);
       solidBodies.push(b.body);
@@ -923,6 +1100,7 @@ function buildWorld(startX) {
   deathShown = false;
   blood.length = 0;
   confetti.length = 0;
+  popups.length = 0;
   camera.x = startX + 120;
   camera.y = groundY(startX) - 60;
   camera.zoom = camera.targetZoom = 1;
@@ -1102,34 +1280,34 @@ function hitRider(part, other, speed, point) {
 
   if (other.hazard === "saw") {
     sfx.saw();
-    kill("回転ノコギリに切られた！", point, dir, 12);
+    kill(other.deathText || "回転ノコギリに切られた！", point, dir, 12);
     fling(dir, 10);
     return;
   }
   if (other.hazard === "spike") {
-    kill("トゲに刺さった！", point, dir, 8);
+    kill(other.deathText || "トゲに刺さった！", point, dir, 8);
     return;
   }
   if (other.hazard === "hammer") {
     sfx.hammer();
     if (speed > 3) {
-      kill("ハンマーで吹き飛ばされた！", point, dir, speed);
+      kill(other.deathText || "ハンマーで吹き飛ばされた！", point, dir, speed);
       fling(normalize(other.velocity), 6 + speed * 0.8);
     } else {
-      eject("ハンマーにぶつかった！", dir, speed);
+      eject(other.ejectText || "ハンマーにぶつかった！", dir, speed);
     }
     return;
   }
   if (other.hazard === "crusher") {
     sfx.slam();
-    kill("プレス機につぶされた！", point, { x: dir.x, y: Math.abs(dir.y) }, 12);
+    kill(other.deathText || "プレス機につぶされた！", point, { x: dir.x, y: Math.abs(dir.y) }, 12);
     return;
   }
   if (other.hazard === "boulder" || other.hazard === "cannonball") {
     const rockSpeed = Math.hypot(other.velocity.x, other.velocity.y);
     if (rockSpeed > 2.5 || speed > 3) {
       sfx.hammer();
-      kill(other.hazard === "boulder" ? "岩につぶされた！" : "砲弾が直撃した！", point, dir, Math.max(speed, rockSpeed));
+      kill(other.deathText || (other.hazard === "boulder" ? "岩につぶされた！" : "砲弾が直撃した！"), point, dir, Math.max(speed, rockSpeed));
       fling(normalize({ x: other.velocity.x, y: other.velocity.y - 2 }), 6 + rockSpeed);
       return;
     }
@@ -1177,7 +1355,7 @@ function hitBike(part, other, speed, point) {
   // 飛び出したトゲに乗り物がぶつかると、急に止まって人が前に投げ出される
   if (other.hazard === "spike" && other.dir === "pop" && state === "playing") {
     sfx.hit(speed);
-    eject("トゲの壁に突っこんだ", { x: 1, y: -0.4 }, 10);
+    eject(other.ejectText || "トゲの壁に突っこんだ", { x: 1, y: -0.4 }, 10);
     fling({ x: 1, y: -0.4 }, 5);
     return;
   }
@@ -1265,6 +1443,7 @@ function kill(cause, point, dir, speed) {
   slowTimer = SLOWMO_TIME;
   shake(0.6, 14);
   sfx.die();
+  stageDeathEffect(point);
 }
 
 // 体全体を dir の向きに吹き飛ばす（部位ごとに少しずつ変える）
@@ -1350,6 +1529,12 @@ function updateParticles(dt) {
     stains[i].life -= dt;
     if (stains[i].life <= 0) stains.splice(i, 1);
   }
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i];
+    p.age += dt;
+    p.y -= 0.5;
+    if (p.age >= p.life) popups.splice(i, 1);
+  }
   for (let i = confetti.length - 1; i >= 0; i--) {
     const c = confetti[i];
     c.vy += 0.08;
@@ -1393,6 +1578,7 @@ function checkRules(dt) {
     dead = true;
     eject("落とし穴に落ちた！", { x: 0, y: 1 }, 0);
     sfx.die();
+    stageDeathEffect(torso.position);
   }
 
   if (chassis.position.x >= COURSE.goalX && state === "playing") {
@@ -1434,11 +1620,13 @@ function step() {
   updateMines(dt * timeScale);
   updateCannons(dt * timeScale);
   checkFakeGoal();
+  updateSlaps();
   if (padTimer > 0) padTimer -= dt;
   checkPads();
 
   Engine.update(engine, STEP_MS);
   processHits();
+  checkWater();
 
   if (state === "playing") checkRules(dt);
   if (state === "down") {
@@ -1467,6 +1655,7 @@ function updateHud() {
   $("distance").textContent = distanceMeters();
   $("deaths").textContent = deaths;
   $("checkpoint").textContent = `${checkpoint + 1}/${COURSE.checkpoints.length}`;
+  $("stage-name").textContent = stage.name;
 }
 
 function setButtons(list) {
@@ -1487,11 +1676,12 @@ function setButtons(list) {
 
 function showTitle() {
   state = "title";
+  menu = "title";
   paused = false;
   overlay.className = "";
   $("overlay-title").textContent = "CRASH RIDE";
   $("overlay-body").innerHTML = `
-    <p>トラップだらけのコースをかけぬけろ！ 初見殺しに注意。チェックポイントは${COURSE.checkpoints.length}つ。</p>
+    <p>トラップだらけのコースをかけぬけろ！ 初見殺しに注意。</p>
     <p class="pick-label">乗り物をえらぶ（1 / 2 / 3 キーでも選べます）</p>
     <div id="vehicles"></div>`;
   const box = $("vehicles");
@@ -1503,7 +1693,7 @@ function showTitle() {
     card.onclick = () => selectVehicle(id);
     box.appendChild(card);
   });
-  setButtons([["START", () => startGame(true)]]);
+  setButtons([["START", () => startStage("main")], ["日本全国チャレンジ", showPrefectures, true]]);
 }
 
 // 乗り物をえらぶ（タイトル画面の後ろに、えらんだ乗り物を表示する）
@@ -1519,39 +1709,134 @@ function selectVehicle(id) {
   showTitle();
 }
 
-// タイトル画面にもどる
+// ステージを切りかえる（まだ始めない）
+function setStage(id) {
+  stageId = id;
+  stage = STAGES[id];
+  COURSE = stage.course;
+}
+
+// ステージを選んで、最初から始める
+function startStage(id) {
+  setStage(id);
+  startGame(true);
+}
+
+// タイトル画面にもどる（後ろの景色はメインコース）
 function backToTitle() {
+  setStage("main");
   buildWorld(COURSE.startX);
   showTitle();
+}
+
+// 都道府県えらびにもどる
+function backToPrefectures() {
+  setStage("main");
+  buildWorld(COURSE.startX);
+  showPrefectures();
+}
+
+// ---------- 記録（クリアタイム・死亡回数）----------
+function loadRecords() {
+  try {
+    return JSON.parse(localStorage.getItem("crashride-records")) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+// 記録を保存して、ベストを更新したかを返す
+function saveRecord(id, time, deathCount) {
+  const all = loadRecords();
+  const r = all[id] || {};
+  const result = { newTime: false, newDeaths: false };
+  if (r.bestTime === undefined || time < r.bestTime) {
+    r.bestTime = time;
+    result.newTime = true;
+  }
+  if (r.bestDeaths === undefined || deathCount < r.bestDeaths) {
+    r.bestDeaths = deathCount;
+    result.newDeaths = true;
+  }
+  r.clears = (r.clears || 0) + 1;
+  all[id] = r;
+  try {
+    localStorage.setItem("crashride-records", JSON.stringify(all));
+  } catch (e) {
+    // 保存できなくても遊べる
+  }
+  result.record = r;
+  return result;
+}
+
+// ---------- 日本全国チャレンジ（都道府県えらび）----------
+function showPrefectures() {
+  state = "title";
+  menu = "prefs";
+  paused = false;
+  overlay.className = "prefs";
+  $("overlay-title").textContent = "日本全国チャレンジ";
+  const records = loadRecords();
+  let html = `<p class="pick-label">県をえらんでスタート（乗り物：${vehicle.name}）</p><div id="regions">`;
+  for (const region of PREFECTURES) {
+    html += `<div class="region"><div class="region-name">${region.region}</div><div class="prefs-row">`;
+    for (const [name, id] of region.list) {
+      if (id && STAGES[id]) {
+        const r = records[id];
+        const best = r ? `BEST ${r.bestTime.toFixed(1)}秒` : "未クリア";
+        html += `<button class="pref open" data-stage="${id}"><b>${name}</b><span>${best}</span></button>`;
+      } else {
+        html += `<button class="pref soon" disabled><b>${name}</b><span>COMING SOON</span></button>`;
+      }
+    }
+    html += `</div></div>`;
+  }
+  html += `</div>`;
+  $("overlay-body").innerHTML = html;
+  for (const btn of document.querySelectorAll(".pref.open")) {
+    btn.onclick = () => startStage(btn.dataset.stage);
+  }
+  setButtons([["タイトルにもどる", showTitle, true]]);
 }
 
 function showDeath() {
   deathShown = true;
   overlay.className = "dead";
-  $("overlay-title").textContent = "YOU DIED";
+  $("overlay-title").textContent = stage.death.title;
+  const lines = stage.death.lines;
+  const line = lines ? `<p class="quip">${lines[Math.floor(Math.random() * lines.length)]}</p>` : "";
   $("overlay-body").innerHTML = `
     <p class="result">${deathCause}</p>
+    ${line}
     <table>
       <tr><td>走行距離</td><td><b>${distanceMeters()} m</b></td></tr>
       <tr><td>経過時間</td><td><b>${elapsed.toFixed(2)} 秒</b></td></tr>
       <tr><td>死亡回数</td><td><b>${deaths} 回</b></td></tr>
     </table>`;
   const cpLabel = checkpoint >= 0 ? `チェックポイント ${checkpoint + 1} から (Enter)` : "スタートから再開 (Enter)";
-  setButtons([[cpLabel, respawn], ["最初からやり直す (R)", () => startGame(false), true], ["乗り物をかえる", backToTitle, true]]);
+  const buttons = [[cpLabel, respawn], ["最初からやり直す (R)", () => startGame(false), true]];
+  if (stageId === "main") buttons.push(["乗り物をかえる", backToTitle, true]);
+  else buttons.push(["県をえらぶ", backToPrefectures, true]);
+  setButtons(buttons);
 }
 
 function showClear() {
+  const result = saveRecord(stageId, elapsed, deaths);
+  const best = result.record;
   overlay.className = "";
-  $("overlay-title").textContent = "CLEAR!";
+  $("overlay-title").textContent = stage.clear.title;
   $("overlay-body").innerHTML = `
-    <p class="result">${vehicle.name}でゴールしました！</p>
+    <p class="result">${stage.clear.line}（${vehicle.name}）</p>
     <table>
-      <tr><td>クリアタイム</td><td><b>${elapsed.toFixed(2)} 秒</b></td></tr>
-      <tr><td>死亡回数</td><td><b>${deaths} 回</b></td></tr>
+      <tr><td>クリアタイム</td><td><b>${elapsed.toFixed(2)} 秒</b>${result.newTime ? ' <span class="new">ベスト更新！</span>' : ""}</td></tr>
+      <tr><td>死亡回数</td><td><b>${deaths} 回</b>${result.newDeaths ? ' <span class="new">ベスト更新！</span>' : ""}</td></tr>
+      <tr><td>ベスト</td><td><b>${best.bestTime.toFixed(2)} 秒 / ${best.bestDeaths} 回</b></td></tr>
       <tr><td>リスタート回数</td><td><b>${restarts} 回</b></td></tr>
-      <tr><td>走行距離</td><td><b>${distanceMeters()} m</b></td></tr>
     </table>`;
-  setButtons([["もう一度遊ぶ (R)", () => startGame(false)], ["乗り物をかえる", backToTitle, true]]);
+  const buttons = [["もう一度遊ぶ (R)", () => startGame(false)]];
+  if (stageId === "main") buttons.push(["乗り物をかえる", backToTitle, true]);
+  else buttons.push(["県をえらぶ", backToPrefectures, true]);
+  setButtons(buttons);
 }
 
 function togglePause() {
@@ -1581,20 +1866,24 @@ function hash(n) {
 }
 
 function drawBackground() {
+  const theme = stage.theme;
   const sky = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-  sky.addColorStop(0, "#5ec8ff");
-  sky.addColorStop(1, "#d8f3ff");
+  sky.addColorStop(0, theme.sky[0]);
+  sky.addColorStop(1, theme.sky[1]);
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
   // 太陽
-  ctx.fillStyle = "#fff3a6";
+  ctx.fillStyle = theme.sun;
   ctx.beginPath();
   ctx.arc(820, 90, 40, 0, Math.PI * 2);
   ctx.fill();
 
+  // 遠くの塔（ステージによってはある）
+  if (theme.far === "tower") drawFarTower(640 - camera.x * 0.05, 400);
+
   // 遠くの山（ゆっくり動く）
-  ctx.fillStyle = "#a9dcb6";
+  ctx.fillStyle = theme.mountains;
   ctx.beginPath();
   ctx.moveTo(0, VIEW_H);
   for (let sx = 0; sx <= VIEW_W; sx += 20) {
@@ -1624,18 +1913,21 @@ function drawBackground() {
     const h = 90 + hash(i + 50) * 150;
     const x = i * 130 - offset;
     const y = 420 - h;
-    ctx.fillStyle = ["#7f8fb8", "#8e9cc4", "#7486b0"][Math.abs(i) % 3];
+    ctx.fillStyle = theme.buildings[Math.abs(i) % theme.buildings.length];
     ctx.fillRect(x, y, w, h + 200);
-    ctx.fillStyle = "rgba(255,255,210,0.6)";
     for (let wy = y + 12; wy < 420; wy += 22) {
       for (let wx = x + 10; wx < x + w - 14; wx += 20) {
-        if (hash(wx * 3 + wy) > 0.35) ctx.fillRect(wx, wy, 9, 11);
+        const r = hash(wx * 3 + wy);
+        if (r > 0.35) {
+          ctx.fillStyle = theme.windows[Math.floor(r * 97) % theme.windows.length];
+          ctx.fillRect(wx, wy, 9, 11);
+        }
       }
     }
   }
 
   // 近くの丘（さらに速く動く）
-  ctx.fillStyle = "#8fd18f";
+  ctx.fillStyle = theme.hills;
   ctx.beginPath();
   ctx.moveTo(0, VIEW_H);
   for (let sx = 0; sx <= VIEW_W; sx += 20) {
@@ -1658,7 +1950,7 @@ function drawPits() {
 function drawLands() {
   for (const land of COURSE.lands) {
     // 土
-    ctx.fillStyle = "#a0673a";
+    ctx.fillStyle = stage.theme.soil;
     ctx.beginPath();
     ctx.moveTo(land[0][0], 2400);
     for (const [x, y] of land) ctx.lineTo(x, y);
@@ -1667,7 +1959,7 @@ function drawLands() {
     ctx.fill();
 
     // 土のしま模様
-    ctx.strokeStyle = "rgba(0,0,0,0.08)";
+    ctx.strokeStyle = stage.theme.stripe;
     ctx.lineWidth = 6;
     for (let d = 40; d < 400; d += 50) {
       ctx.beginPath();
@@ -1676,7 +1968,7 @@ function drawLands() {
     }
 
     // 草
-    ctx.strokeStyle = "#47b84a";
+    ctx.strokeStyle = stage.theme.grass;
     ctx.lineWidth = 10;
     ctx.lineJoin = "round";
     ctx.beginPath();
@@ -1707,10 +1999,10 @@ function drawRamps() {
       ctx.stroke();
     }
     // 板
-    ctx.fillStyle = "#ffb627";
+    ctx.fillStyle = stage.theme.ramp.fill;
     polygon(v);
     ctx.fill();
-    ctx.strokeStyle = "#5c3a12";
+    ctx.strokeStyle = stage.theme.ramp.stroke;
     ctx.lineWidth = 3;
     ctx.stroke();
   }
@@ -1809,6 +2101,14 @@ function drawHazards() {
       }
       drawSaw(m.position.x, m.position.y, m.radius);
     }
+    if (m.hazard === "hammer" && m.kind === "harisen") {
+      drawHarisen(m);
+      continue;
+    }
+    if (m.isPlatform && m.axis === "drop") {
+      drawDropTower(m);
+      continue;
+    }
     if (m.hazard === "hammer") {
       // 腕
       ctx.strokeStyle = "#5b4636";
@@ -1905,6 +2205,10 @@ function drawHazards() {
   // 転がる岩
   for (const b of boulders) {
     if (!b.body || b.removed) continue;
+    if (b.kind === "takoyaki") {
+      drawTakoyaki(b.body.position.x, b.body.position.y, b.r, b.body.angle);
+      continue;
+    }
     const { x, y } = b.body.position;
     ctx.save();
     ctx.translate(x, y);
@@ -1928,6 +2232,10 @@ function drawHazards() {
     const c = piece.crumble;
     if (c.fake) {
       drawFakeFloor(piece);
+      continue;
+    }
+    if (c.style === "bridge") {
+      drawBridgePiece(piece);
       continue;
     }
     const jitter = c.timer >= 0 && !c.fallen ? (Math.random() - 0.5) * 3 : 0;
@@ -1969,6 +2277,14 @@ function drawFakeFloor(piece) {
 // プレス機・飛び出すトゲ・地雷・大砲・砲弾・爆発
 function drawNewTraps() {
   for (const m of movers) {
+    if (m.hazard === "crusher" && m.kind === "tentacle") {
+      drawTentacle(m);
+      continue;
+    }
+    if (m.hazard === "spike" && m.style === "kushi") {
+      drawKushi(m);
+      continue;
+    }
     if (m.hazard === "crusher") {
       const { x, y } = m.position;
       // 上から押すピストン
@@ -2040,6 +2356,11 @@ function drawNewTraps() {
 
   // 大砲（塔の上から撃ってくる）
   for (const c of cannons) {
+    if (c.kind === "takoyaki") {
+      drawStall(c);
+      continue;
+    }
+    if (c.kind === "boss") continue;   // ボスの絵は飾り（decor）で描く
     const floor = groundY(c.x) ?? 600;
     ctx.fillStyle = "#6b4423";
     ctx.fillRect(c.x - 10, c.y + 14, 20, floor - c.y - 14);
@@ -2065,6 +2386,10 @@ function drawNewTraps() {
   }
   for (const ball of cannonBalls) {
     const { x, y } = ball.body.position;
+    if (ball.body.kind === "takoyaki" || ball.body.kind === "boss") {
+      drawTakoyaki(x, y, ball.body.radius, ball.body.angle);
+      continue;
+    }
     ctx.fillStyle = "#1f1f1f";
     ctx.beginPath();
     ctx.arc(x, y, ball.body.radius, 0, Math.PI * 2);
@@ -2092,9 +2417,526 @@ function drawNewTraps() {
   }
 }
 
+// ============================================
+//  ステージの飾り・ご当地ギミックの描画
+// ============================================
+
+// 遠くに見える塔（大阪）
+function drawFarTower(x, base) {
+  ctx.save();
+  ctx.fillStyle = "rgba(70, 40, 80, 0.55)";
+  ctx.beginPath();
+  ctx.moveTo(x - 50, base);
+  ctx.lineTo(x - 14, base - 150);
+  ctx.lineTo(x + 14, base - 150);
+  ctx.lineTo(x + 50, base);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillRect(x - 26, base - 190, 52, 40);   // 展望台
+  ctx.fillRect(x - 4, base - 250, 8, 60);     // アンテナ
+  ctx.fillStyle = `hsl(${(simTime * 60) % 360}, 90%, 65%)`;   // ネオン
+  ctx.fillRect(x - 26, base - 160, 52, 6);
+  ctx.restore();
+}
+
+// 当たり判定のない飾り
+function drawDecor() {
+  for (const d of stage.decor) {
+    if (Math.abs(d.x !== undefined ? d.x - camera.x : 0) > 1200 && d.type !== "lanterns") continue;
+    if (d.type === "lanterns") drawLanterns(d);
+    else if (d.type === "neon") drawNeon(d);
+    else if (d.type === "globe") drawGlobe(d);
+    else if (d.type === "boss") drawOctopusBoss(d);
+    else if (d.type === "ferris") drawFerrisWheel(d);
+  }
+}
+
+// 提灯の列
+function drawLanterns(d) {
+  if (d.x2 < camera.x - 700 || d.x1 > camera.x + 700) return;
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = d.x1; x <= d.x2; x += 20) {
+    const sag = Math.sin(((x - d.x1) % 280) / 280 * Math.PI) * 18;
+    if (x === d.x1) ctx.moveTo(x, d.y + sag);
+    else ctx.lineTo(x, d.y + sag);
+  }
+  ctx.stroke();
+  for (let x = d.x1 + 35; x < d.x2; x += 70) {
+    const sag = Math.sin(((x - d.x1) % 280) / 280 * Math.PI) * 18;
+    const y = d.y + sag + 14 + Math.sin(simTime * 2 + x) * 1.5;
+    ctx.fillStyle = "rgba(255, 120, 60, 0.25)";
+    ctx.beginPath();
+    ctx.arc(x, y, 20, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#e53935";
+    ctx.beginPath();
+    ctx.ellipse(x, y, 10, 13, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#222";
+    ctx.fillRect(x - 7, y - 15, 14, 4);
+    ctx.fillRect(x - 7, y + 11, 14, 4);
+  }
+}
+
+// ネオンの看板（ときどきチカチカする）
+function drawNeon(d) {
+  ctx.save();
+  ctx.font = "bold 20px sans-serif";
+  const w = ctx.measureText(d.text).width + 24;
+  ctx.fillStyle = "#1d1630";
+  ctx.fillRect(d.x - w / 2, d.y - 18, w, 36);
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(d.x, d.y + 18);
+  ctx.lineTo(d.x, (groundY(d.x) ?? d.y + 200));
+  ctx.stroke();
+  const flicker = hash(Math.floor(simTime * 8) + d.x) > 0.06;
+  ctx.fillStyle = flicker ? d.color : "#444";
+  ctx.shadowColor = d.color;
+  ctx.shadowBlur = flicker ? 14 : 0;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(d.text, d.x, d.y + 1);
+  ctx.restore();
+}
+
+// テーマパークの回る地球儀
+function drawGlobe(d) {
+  const r = 70;
+  const cy = d.y - 150;
+  ctx.fillStyle = "#666";
+  ctx.fillRect(d.x - 8, cy + r - 10, 16, d.y - cy - r + 120);
+  ctx.fillRect(d.x - 60, cy + r + 20, 120, 16);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(d.x, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#3a7bd5";
+  ctx.fill();
+  ctx.clip();
+  // 回る大陸
+  ctx.fillStyle = "#47b84a";
+  for (let i = 0; i < 4; i++) {
+    const lon = ((simTime * 0.5 + i * 1.6) % (Math.PI * 2)) - Math.PI;
+    const x = d.x + Math.sin(lon) * r * 0.9;
+    const w = Math.cos(lon) * 22;
+    if (w <= 0) continue;
+    ctx.beginPath();
+    ctx.ellipse(x, cy - 20 + i * 12, w, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.strokeStyle = "#cfd8e3";
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.ellipse(d.x, cy, r + 18, 20, -0.3, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+// ボス「たこ焼き大王」（巨大なタコ。ハチマキをしめて怒っている）
+function drawOctopusBoss(d) {
+  const bob = Math.sin(simTime * 2) * 6;
+  const x = d.x;
+  const y = d.y + bob - 60;
+  // 足の付け根
+  ctx.fillStyle = "#d84343";
+  for (let i = -3; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.ellipse(x + i * 22, y + 90, 16, 40 + Math.sin(simTime * 3 + i) * 6, i * 0.15, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // 頭
+  ctx.fillStyle = "#e9573f";
+  ctx.beginPath();
+  ctx.ellipse(x, y, 110, 95, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(x - 40, y - 45, 30, 18, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+  // ハチマキ
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(x - 108, y - 30, 216, 22);
+  ctx.fillStyle = "#e53935";
+  ctx.beginPath();
+  ctx.arc(x, y - 19, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.moveTo(x + 100, y - 20);
+  ctx.lineTo(x + 140, y - 40 + Math.sin(simTime * 6) * 6);
+  ctx.lineTo(x + 135, y - 10);
+  ctx.closePath();
+  ctx.fill();
+  // 怒った目（ときどきまばたき）
+  const blink = (simTime % 3.5) < 0.12;
+  for (const ex of [-38, 18]) {
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.ellipse(x + ex, y + 20, 18, blink ? 2 : 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (!blink) {
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.arc(x + ex - 6, y + 22, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(x + ex - 18, y - 2 + (ex < 0 ? -6 : 6));
+    ctx.lineTo(x + ex + 16, y - 2 + (ex < 0 ? 6 : -6));
+    ctx.stroke();
+  }
+  // とがった口（ここからたこ焼きを飛ばす）
+  ctx.fillStyle = "#c43c2c";
+  ctx.beginPath();
+  ctx.ellipse(x - 60, y + 58, 22, 14, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#4a1010";
+  ctx.beginPath();
+  ctx.ellipse(x - 72, y + 62, 8, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // 名前
+  ctx.font = "bold 22px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = "#1d1630";
+  ctx.strokeText("たこ焼き大王", x, y - 120);
+  ctx.fillStyle = "#ffd23f";
+  ctx.fillText("たこ焼き大王", x, y - 120);
+}
+
+// たこ焼き（ソース・マヨネーズ・青のり・かつおぶし）
+function drawTakoyaki(x, y, r, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = "#c98236";
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#a8642a";
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.arc(Math.cos(i * 1.3) * r * 0.55, Math.sin(i * 2.1) * r * 0.55, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // ソース
+  ctx.fillStyle = "#4a230c";
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.98, Math.PI * 1.05, Math.PI * 1.95);
+  ctx.quadraticCurveTo(0, -r * 0.1, -r * 0.98 * Math.cos(Math.PI * 0.05), -r * 0.98 * Math.sin(Math.PI * 0.05));
+  ctx.fill();
+  // マヨネーズ
+  ctx.strokeStyle = "#fffbe6";
+  ctx.lineWidth = Math.max(1.5, r * 0.08);
+  ctx.beginPath();
+  for (let i = 0; i <= 6; i++) {
+    const px = -r * 0.7 + (i * r * 1.4) / 6;
+    const py = -r * 0.55 + (i % 2) * r * 0.25;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  // 青のり
+  ctx.fillStyle = "#3f8f3a";
+  for (let i = 0; i < 7; i++) {
+    ctx.fillRect(Math.cos(i * 2.7) * r * 0.6, -r * 0.5 + Math.sin(i * 1.9) * r * 0.3, 2, 2);
+  }
+  // かつおぶし
+  ctx.fillStyle = "#f4c7a1";
+  ctx.beginPath();
+  ctx.ellipse(r * 0.15, -r * 0.75, r * 0.22, r * 0.08, 0.4 + Math.sin(simTime * 10) * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// たこ焼き屋台（たこ焼きを投げてくる）
+function drawStall(c) {
+  const floor = groundY(c.x) ?? 570;
+  const x = c.x;
+  ctx.fillStyle = "#8b5a2b";
+  ctx.fillRect(x - 60, floor - 60, 120, 60);
+  ctx.fillStyle = "#333";
+  ctx.fillRect(x - 50, floor - 66, 100, 8);   // 鉄板
+  ctx.fillStyle = "#6b4423";
+  ctx.fillRect(x - 60, floor - 150, 6, 90);
+  ctx.fillRect(x + 54, floor - 150, 6, 90);
+  ctx.fillStyle = "#e53935";
+  ctx.fillRect(x - 70, floor - 160, 140, 24);
+  // のれん
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = i % 2 === 0 ? "#e53935" : "#fff";
+    ctx.fillRect(x - 60 + i * 30, floor - 136, 28, 26 + Math.sin(simTime * 3 + i) * 2);
+  }
+  ctx.font = "bold 16px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff";
+  ctx.fillText("たこ焼き", x, floor - 148);
+  if (c.flash > 0) {
+    ctx.font = "bold 18px sans-serif";
+    ctx.fillStyle = "#ffd23f";
+    ctx.fillText("ほいっ!", x - 70, floor - 180);
+  }
+}
+
+// ツッコミのハリセン（上の台からぶら下がっている）
+function drawHarisen(m) {
+  const { pivot } = m;
+  const floor = groundY(pivot.x) ?? pivot.y + 160;
+  // 台
+  ctx.fillStyle = "#555";
+  ctx.fillRect(pivot.x - 70, pivot.y - 18, 230, 10);
+  ctx.fillRect(pivot.x + 150, pivot.y - 18, 8, floor - pivot.y + 18);
+  // 柄（木）
+  ctx.strokeStyle = "#b07a3a";
+  ctx.lineWidth = 8;
+  ctx.lineCap = "round";
+  line(pivot, m.position);
+  ctx.fillStyle = "#333";
+  ctx.beginPath();
+  ctx.arc(pivot.x, pivot.y, 8, 0, Math.PI * 2);
+  ctx.fill();
+  // 紙の部分（じゃばら）
+  ctx.save();
+  ctx.translate(m.position.x, m.position.y);
+  ctx.rotate(m.angle);
+  ctx.fillStyle = "#fffdf5";
+  ctx.beginPath();
+  ctx.moveTo(-16, -18);
+  ctx.lineTo(16, -18);
+  ctx.lineTo(42, 18);
+  ctx.lineTo(-42, 18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#e53935";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = "#c9c2b0";
+  ctx.lineWidth = 1.5;
+  for (let i = -3; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * 4.5, -18);
+    ctx.lineTo(i * 12, 18);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#e53935";
+  ctx.fillRect(-16, -22, 32, 6);
+  ctx.restore();
+}
+
+// 観覧車（飾り。ゴンドラもいっしょに回る）
+function drawFerrisWheel(f) {
+  const t = (simTime / f.period) * Math.PI * 2;
+  const floor = 700;
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  ctx.strokeStyle = "#8a93a6";
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(f.x, f.y);
+  ctx.lineTo(f.x - 80, floor);
+  ctx.moveTo(f.x, f.y);
+  ctx.lineTo(f.x + 80, floor);
+  ctx.stroke();
+  ctx.strokeStyle = "#e9eef5";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  for (let i = 0; i < f.count * 2; i++) {
+    const a = t + (i / (f.count * 2)) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(f.x, f.y);
+    ctx.lineTo(f.x + Math.cos(a) * f.r, f.y + Math.sin(a) * f.r);
+    ctx.stroke();
+  }
+  const colors = ["#e53935", "#ffd23f", "#3a7bd5", "#2ec4b6", "#e040fb", "#ff8a1f"];
+  for (let i = 0; i < f.count; i++) {
+    const a = t + (i / f.count) * Math.PI * 2;
+    const gx = f.x + Math.cos(a) * f.r;
+    const gy = f.y + Math.sin(a) * f.r;
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillRect(gx - 14, gy, 28, 24);
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.fillRect(gx - 9, gy + 5, 18, 9);
+  }
+  ctx.fillStyle = "#e040fb";
+  ctx.beginPath();
+  ctx.arc(f.x, f.y, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// フリーフォール（塔と、上下する床）
+function drawDropTower(m) {
+  const p = m.tower;
+  const { x, y } = m.position;
+  // 塔（赤と白）
+  const towerTop = p.top - 140;
+  for (let ty = towerTop; ty < 760; ty += 40) {
+    ctx.fillStyle = Math.floor((ty - towerTop) / 40) % 2 === 0 ? "#e53935" : "#f5f5f5";
+    ctx.fillRect(x - 11, ty, 22, 40);
+  }
+  ctx.fillStyle = "#ffd23f";
+  ctx.beginPath();
+  ctx.arc(x, towerTop, 16, 0, Math.PI * 2);
+  ctx.fill();
+  // 床とイス
+  ctx.fillStyle = "#444";
+  ctx.fillRect(x - m.w / 2, y - m.h / 2, m.w, m.h);
+  ctx.fillStyle = "#ffd23f";
+  for (let i = 0; i < m.w; i += 28) ctx.fillRect(x - m.w / 2 + i, y - m.h / 2, 14, 5);
+  ctx.fillStyle = "#e040fb";
+  ctx.fillRect(x + m.w / 2 - 4, y - 60, 10, 60);
+  // 上で止まっているあいだは「いまや！」
+  const q = ((simTime + (p.phase || 0)) % p.period + p.period) % p.period;
+  if (q > DROP_WAIT + DROP_RISE && q < DROP_WAIT + DROP_RISE + DROP_TOP) {
+    ctx.font = "bold 18px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#1d1630";
+    ctx.strokeText("いまや！おりて！", x, y - 110);
+    ctx.fillStyle = "#ffd23f";
+    ctx.fillText("いまや！おりて！", x, y - 110);
+  }
+}
+
+// 戎橋のかけら（赤い欄干つき）
+function drawBridgePiece(piece) {
+  const c = piece.crumble;
+  const jitter = c.timer >= 0 && !c.fallen ? (Math.random() - 0.5) * 3 : 0;
+  ctx.save();
+  ctx.translate(piece.position.x + jitter, piece.position.y);
+  ctx.rotate(piece.angle);
+  const hw = piece.w / 2;
+  ctx.fillStyle = "#8d6e63";
+  ctx.fillRect(-hw, -10, hw * 2, 20);
+  ctx.fillStyle = "#c62828";
+  ctx.fillRect(-hw, -38, hw * 2, 5);
+  for (let x = -hw + 6; x < hw; x += 18) ctx.fillRect(x, -36, 4, 26);
+  ctx.strokeStyle = "#4e342e";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-hw, -10, hw * 2, 20);
+  ctx.restore();
+}
+
+// 串カツ（地面からリズムよく飛び出す）
+function drawKushi(m) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(m.position.x - m.w, m.floor - 300, m.w * 2, 300 + 2);
+  ctx.clip();
+  const top = m.position.y - m.h / 2;
+  const bottom = m.position.y + m.h / 2;
+  for (let i = 0; i < 3; i++) {
+    const x = m.position.x - m.w / 2 + 10 + i * (m.w - 20) / 2;
+    ctx.strokeStyle = "#e8d3a8";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, bottom);
+    ctx.lineTo(x, top - 10);
+    ctx.stroke();
+    ctx.fillStyle = "#e8d3a8";
+    ctx.beginPath();
+    ctx.moveTo(x - 2, top - 8);
+    ctx.lineTo(x, top - 18);
+    ctx.lineTo(x + 2, top - 8);
+    ctx.fill();
+    for (let j = 0; j < 3; j++) {
+      const cy = top + 8 + j * 18;
+      ctx.fillStyle = "#c68642";
+      ctx.beginPath();
+      ctx.ellipse(x, cy, 8, 9, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#8a5a2b";
+      ctx.fillRect(x - 4, cy - 3, 2, 2);
+      ctx.fillRect(x + 2, cy + 2, 2, 2);
+    }
+  }
+  ctx.restore();
+}
+
+// たこ焼き大王のタコ足（上からたたきつける）
+function drawTentacle(m) {
+  const { x, y } = m.position;
+  const tipY = y + m.h / 2;
+  const sway = Math.sin(simTime * 3 + x) * 6;
+  ctx.strokeStyle = "#d84343";
+  ctx.lineCap = "round";
+  ctx.lineWidth = m.w * 0.7;
+  ctx.beginPath();
+  ctx.moveTo(x + sway, y - 420);
+  ctx.quadraticCurveTo(x - sway * 2, y - 200, x, tipY - m.w * 0.35);
+  ctx.stroke();
+  ctx.fillStyle = "#ffc1b5";
+  for (let k = tipY - 30; k > y - 380; k -= 34) {
+    ctx.beginPath();
+    ctx.arc(x - m.w * 0.18, k, 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// 水（道頓堀・大阪湾）。人や自転車の手前に、すき通った色で描く
+function drawWater() {
+  for (const w of COURSE.water) {
+    if (w.x2 < camera.x - 700 || w.x1 > camera.x + 700) continue;
+    ctx.fillStyle = w.color || "#2f6fa8";
+    ctx.globalAlpha = 0.72;
+    ctx.beginPath();
+    ctx.moveTo(w.x1, w.y + 600);
+    for (let x = w.x1; x <= w.x2; x += 15) {
+      ctx.lineTo(x, w.y + Math.sin(x / 30 + simTime * 3) * 3);
+    }
+    ctx.lineTo(w.x2, w.y + 600);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let x = w.x1; x <= w.x2; x += 15) {
+      const y = w.y + Math.sin(x / 30 + simTime * 3) * 3;
+      if (x === w.x1) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+}
+
+// 浮かんで消える文字（ポンと大きくなって出てくる）
+function drawPopups() {
+  for (const p of popups) {
+    const k = Math.min(1, p.age / 0.12);
+    const alpha = Math.min(1, (p.life - p.age) / 0.4);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(-0.08);
+    ctx.scale(0.5 + k * 0.5, 0.5 + k * 0.5);
+    ctx.font = `bold ${p.size}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = p.size / 5;
+    ctx.strokeStyle = "#1d1630";
+    ctx.strokeText(p.text, 0, 0);
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.text, 0, 0);
+    ctx.restore();
+  }
+}
+
 // 「トンネル」の飾り（プレス機のまわり）
 function drawTunnels() {
   for (const c of COURSE.crushers) {
+    if (c.kind) continue;
     const floor = groundY(c.x);
     const l = c.x - c.w / 2 - 70;
     const r = c.x + c.w / 2 + 70;
@@ -2488,18 +3330,21 @@ function draw() {
   ctx.scale(camera.zoom, camera.zoom);
   ctx.translate(-Math.round(camera.x), -Math.round(camera.y));
   drawPits();
+  drawDecor();
   drawSigns();
   drawRamps();
   drawLands();
   drawCheckpoints();
   drawWalls();
-  drawGoal(COURSE.fakeGoalX);
+  if (COURSE.fakeGoalX !== undefined) drawGoal(COURSE.fakeGoalX);
   drawGoal(COURSE.goalX);
   drawTunnels();
   drawHazards();
   drawNewTraps();
   drawRider();
+  drawWater();
   drawParticles();
+  drawPopups();
   ctx.restore();
 
   drawScreenEffects();
@@ -2516,7 +3361,7 @@ const KEY_NAMES = {
 
 document.addEventListener("keydown", event => {
   const key = event.key;
-  if (state === "title" && VEHICLE_ORDER[Number(key) - 1]) {
+  if (state === "title" && menu === "title" && VEHICLE_ORDER[Number(key) - 1]) {
     selectVehicle(VEHICLE_ORDER[Number(key) - 1]);
     return;
   }
