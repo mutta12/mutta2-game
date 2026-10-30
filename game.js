@@ -245,7 +245,7 @@ const DEFAULT_THEME = {
 const COURSE_KEYS = [
   "lands", "ramps", "walls", "checkpoints", "saws", "movingSaws", "spikes", "hammers", "platforms",
   "crumbles", "pads", "seesaws", "boulders", "signs", "mines", "crushers", "popSpikes", "cannons",
-  "water",
+  "water", "slippery", "sharks", "depthShots",
 ];
 for (const id in STAGES) {
   const st = STAGES[id];
@@ -282,6 +282,11 @@ let cannons;         // 大砲
 let cannonBalls;     // 飛んでいる砲弾
 let blasts;          // 爆発の光（描画用）
 let fakeGoalPassed = false;
+let liftRamps = [];  // チェーンリフト（自動で引っぱり上げるレール）
+let chefs = [];      // 背景のたこ焼き職人
+let flyingTakoyaki = [];   // 画面の奥から飛んでくるたこ焼き
+let slipCooldown = 0;
+let chainTick = 0;
 const popups = [];   // 「なんでやねん!」などの、浮かんで消える文字
 let padTimer = 0;    // ジャンプパッドが続けて反応しないようにする時間
 let hits;            // 物理演算中に起きた衝突（あとでまとめて処理する）
@@ -392,6 +397,10 @@ const sfx = {
   die() { this.tone(400, 0.6, "sawtooth", 0.08, 60); this.noise(0.4, 0.3, 500); },
   checkpoint() { this.tone(660, 0.12, "square", 0.06); setTimeout(() => this.tone(990, 0.2, "square", 0.06), 120); },
   beep() { this.tone(1800, 0.07, "square", 0.06); },
+  shark() { this.noise(0.5, 0.25, 600); this.tone(90, 0.5, "sawtooth", 0.1, 50); },
+  chomp() { this.noise(0.15, 0.4, 900); setTimeout(() => this.noise(0.15, 0.4, 700), 160); },
+  chain() { this.tone(1400, 0.02, "square", 0.025); },
+  sizzle() { this.noise(0.25, 0.12, 2600); },
   zukko() { this.tone(900, 0.7, "sine", 0.12, 110); },                                   // ズコー
   slap() { this.noise(0.12, 0.35, 3000); this.tone(1300, 0.06, "square", 0.05, 500); },   // パシーン
   splash() { this.noise(0.7, 0.35, 1400); this.tone(300, 0.4, "sine", 0.06, 80); },
@@ -441,14 +450,26 @@ function createCourse() {
     for (let i = 0; i < land.length - 1; i++) {
       const [x1, y1] = land[i];
       const [x2, y2] = land[i + 1];
-      groundBodies.push(makeSegment(x1, y1, x2, y2, 40));
+      const segment = makeSegment(x1, y1, x2, y2, 40);
+      // ソースでツルツルの地面（タイヤがすべる）
+      for (const r of COURSE.slippery) {
+        if (x1 >= r.x1 && x2 <= r.x2) {
+          segment.friction = r.friction;
+          segment.frictionStatic = 0;
+          segment.slippery = true;
+        }
+      }
+      groundBodies.push(segment);
     }
   }
-  for (const [x1, y1, x2, y2] of COURSE.ramps) {
+  // ジャンプ台・レール。5つ目に { lift: 速さ } があればチェーンリフト
+  for (const [x1, y1, x2, y2, opt] of COURSE.ramps) {
     const ramp = makeSegment(x1, y1, x2, y2, 16);
     ramp.isRamp = true;
+    if (opt && opt.lift) ramp.lift = opt.lift;
     groundBodies.push(ramp);
   }
+  liftRamps = groundBodies.filter(b => b.lift);
   for (const x of COURSE.walls) {
     groundBodies.push(Bodies.rectangle(x, 0, 40, 2400, { isStatic: true }));
   }
@@ -618,6 +639,22 @@ function createCourse() {
     movers.push(spike);
   }
 
+  // サメ：川から飛び出して、乗っている人を食べる
+  for (const sh of COURSE.sharks) {
+    const trap = { triggerAt: null, trigger: sh.trigger, sound: "shark" };
+    const shark = makeMover(Bodies.rectangle(sh.x, sh.waterY + 40, 120, 46, { density: 0.05 }), t => sharkPose(sh, trap, t));
+    shark.hazard = "shark";
+    shark.deathText = sh.death;
+    shark.sharkData = sh;
+    shark.trap = trap;
+    shark.lastY = sh.waterY + 40;
+    movers.push(shark);
+  }
+
+  // 背景のたこ焼き職人
+  chefs = COURSE.depthShots.map(d => ({ ...d, timer: 0.6, flip: 0 }));
+  flyingTakoyaki = [];
+
   // 地雷：ふれたら作動する（すり抜けるセンサー）
   mines = COURSE.mines.map(m => {
     const y = groundY(m.x);
@@ -636,6 +673,149 @@ function createCourse() {
 
   solidBodies = [...groundBodies, ...movers, ...crumbles, ...seesaws];
   Composite.add(engine.world, solidBodies);
+}
+
+// サメの位置と向き。飛んでいないときは水の中にかくれている
+//   右から左へ、放物線をえがいて飛ぶ
+function sharkPose(sh, trap, t) {
+  const hidden = { x: sh.x, y: sh.waterY + 40, angle: 0 };
+  if (trap.triggerAt === null || t < trap.triggerAt) return hidden;
+  const p = (t - trap.triggerAt) % sh.period;
+  if (p > sh.leap) return hidden;
+  const u = p / sh.leap;
+  const h = sh.waterY - sh.peakY;
+  const x = sh.x + sh.span / 2 - sh.span * u;
+  const y = sh.waterY - h * 4 * u * (1 - u);
+  // 進む向きに体をかたむける（左向きが 0）
+  const angle = Math.atan2(-h * (4 - 8 * u), -sh.span) - Math.PI;
+  return { x, y, angle };
+}
+
+// サメが水面を出入りするときの水しぶき・食べた人を口の中に入れておく
+function updateSharks() {
+  for (const m of movers) {
+    if (m.hazard !== "shark") continue;
+    const w = COURSE.water.find(w => m.position.x > w.x1 && m.position.x < w.x2);
+    if (w && (m.lastY > w.y) !== (m.position.y > w.y) && Math.abs(m.position.x - camera.x) < 700) {
+      splashFx(m.position.x, w.y, 25);
+      sfx.splash();
+    }
+    m.lastY = m.position.y;
+  }
+  if (bike.eatenBy) {
+    const shark = bike.eatenBy;
+    for (const p of bike.riderParts) {
+      Body.setPosition(p, { x: shark.position.x - 30 + (Math.random() - 0.5) * 10, y: shark.position.y });
+      Body.setVelocity(p, shark.velocity);
+    }
+  }
+}
+
+// サメに食べられる
+function eatRider(shark, point) {
+  if (dead || (state !== "playing" && state !== "down")) return;
+  bike.eatenBy = shark;
+  for (const p of bike.riderParts) p.collisionFilter.mask = 0;
+  kill(shark.deathText || "サメに食べられた！", point, { x: -1, y: -0.3 }, 14);
+  addPopup(point.x, point.y - 90, "ガブッ!!", "#ff5a36", 46);
+  sfx.chomp();
+}
+
+// チェーンリフト：レールにふれている車輪を、決まった速さで回して引っぱり上げる
+function updateLifts(dt) {
+  if (!liftRamps.length) return;
+  let lift = null;
+  for (const wheel of [bike.rear, bike.front]) {
+    for (const ramp of liftRamps) {
+      if (Query.collides(wheel, [ramp]).length) {
+        Body.setAngularVelocity(wheel, ramp.lift / wheel.circleRadius);
+        lift = ramp;
+      }
+    }
+  }
+  const onLift = lift !== null;
+  // リフトの上では車体がレールと平行になるように支える（ひっくり返らないように）
+  if (onLift && !ejected) {
+    const c = bike.chassis;
+    Body.setAngularVelocity(c, c.angularVelocity * 0.7 + (lift.angle - c.angle) * 0.05);
+  }
+  // カタカタカタ…
+  if (onLift && state === "playing") {
+    chainTick -= dt;
+    if (chainTick <= 0) {
+      chainTick = 0.12;
+      sfx.chain();
+    }
+  }
+}
+
+// ソースの上でタイヤが空回りしたら「ツルッ」
+function updateSlip(dt) {
+  if (slipCooldown > 0) slipCooldown -= dt;
+  if (state !== "playing" || !onGround || slipCooldown > 0) return;
+  const x = bike.chassis.position.x;
+  if (!COURSE.slippery.some(r => x > r.x1 && x < r.x2)) return;
+  const wheelSpeed = bike.rear.angularVelocity * bike.rear.circleRadius;
+  if (Math.abs(wheelSpeed - bike.chassis.velocity.x) > 3) {
+    slipCooldown = 1.2;
+    addPopup(x, bike.chassis.position.y - 70, "ツルッ", "#ffd23f", 26);
+  }
+}
+
+// 背景のたこ焼き職人：遠くに見えるように、画面といっしょに少し動く
+function chefScreenX(c) {
+  return c.x + (camera.x - c.x) * 0.55;
+}
+
+// たこ焼き職人がひっくり返すたびに、画面の奥からたこ焼きが飛んでくる
+function updateChefs(dt) {
+  const x = bike.chassis.position.x;
+  for (const c of chefs) {
+    if (c.flip > 0) c.flip -= dt;
+    if (state !== "playing" || x < c.x1 || x > c.x2) continue;
+    c.timer -= dt;
+    if (c.timer > 0) continue;
+    c.timer = c.interval;
+    c.flip = 0.35;
+    // 自転車が少し先に進む場所をねらう
+    const tx = x + bike.chassis.velocity.x * c.flight * 60 * c.lead;
+    const gy = groundY(tx) ?? bike.chassis.position.y + 40;
+    const sx = chefScreenX(c);
+    flyingTakoyaki.push({ sx, sy: c.y, tx, ty: gy - 40, gy, t: 0, T: c.flight, r: c.r, death: c.death });
+    sfx.sizzle();
+    addPopup(sx, c.y - 90, "ほいっ!", "#ffd23f", 22);
+  }
+  // 手前まで飛んできたら、ふつうの（ぶつかる）たこ焼きになる
+  for (let i = flyingTakoyaki.length - 1; i >= 0; i--) {
+    const f = flyingTakoyaki[i];
+    f.t += dt;
+    if (f.t < f.T) continue;
+    flyingTakoyaki.splice(i, 1);
+    const body = Bodies.circle(f.tx, f.ty, f.r, {
+      density: 0.02, friction: 0.6, restitution: 0.3, frictionAir: 0,
+      collisionFilter: { group: 0, category: CAT.DEBRIS, mask: CAT.GROUND | CAT.BIKE | CAT.RIDER | CAT.DEBRIS },
+    });
+    body.hazard = "cannonball";
+    body.radius = f.r;
+    body.kind = "takoyaki";
+    body.deathText = f.death;
+    Body.setVelocity(body, { x: (Math.random() - 0.5) * 2, y: 6 });
+    Composite.add(engine.world, body);
+    cannonBalls.push({ body, life: 3 });
+  }
+}
+
+// 水しぶき（見た目だけ）
+function splashFx(x, y, count) {
+  for (let i = 0; i < count; i++) {
+    if (blood.length >= MAX_BLOOD) blood.shift();
+    blood.push({
+      x: x + (Math.random() - 0.5) * 50, y,
+      vx: (Math.random() - 0.5) * 7, vy: -2 - Math.random() * 7,
+      r: 2 + Math.random() * 2.5, life: 0.7 + Math.random() * 0.4,
+      color: ["#d6f1ff", "#8fd3ff", "#ffffff"][i % 3], spark: true,
+    });
+  }
 }
 
 // フリーフォールの高さ（床の中心の y）
@@ -752,6 +932,7 @@ function updateTriggers() {
     if (trap.triggerAt === null && state === "playing" && x > trap.trigger) {
       trap.triggerAt = simTime;
       if (trap.sound === "pop") sfx.pop();
+      else if (trap.sound === "shark") sfx.shark();
       else sfx.tone(220, 0.15, "square", 0.05);   // プレス機の「ガタッ」
     }
     // プレス機が地面に着いた瞬間に音と揺れ
@@ -902,7 +1083,13 @@ function checkFakeGoal() {
 // 自転車が決まった場所を通ったら、後ろから岩を転がす
 function updateBoulders() {
   for (const b of boulders) {
-    if (!b.body && bike.chassis.position.x > b.trigger && state === "playing") {
+    // 坂の上を通りすぎたときだけ出てくる（先のチェックポイントから再開したときは出てこない）
+    const bx = bike.chassis.position.x;
+    if (!b.body && !b.skipped && bx > b.trigger && state === "playing") {
+      if (bx > b.trigger + 400) {
+        b.skipped = true;
+        continue;
+      }
       b.body = Bodies.circle(b.x, b.y, b.r, {
         density: 0.01, friction: 0.9, restitution: 0.1, frictionAir: 0.002,
         collisionFilter: { group: 0, category: CAT.DEBRIS, mask: CAT.GROUND | CAT.BIKE | CAT.RIDER | CAT.DEBRIS },
@@ -915,6 +1102,22 @@ function updateBoulders() {
       solidBodies.push(b.body);
       sfx.crumble();
       shake(0.3, 5);
+    }
+    // 鉄板の穴に「スポッ」とはまる
+    if (b.holeX !== undefined && b.body && !b.removed && !b.inHole && b.body.position.x > b.holeX) {
+      b.inHole = true;
+      Body.setVelocity(b.body, { x: b.body.velocity.x * 0.3, y: 10 });
+      addPopup(b.holeX + 60, b.body.position.y - 60, "スポッ!", "#ffd23f", 30);
+      sfx.tone(600, 0.15, "sine", 0.1, 200);
+    }
+    // chase：乗り物の最高速度の chase 倍より遅くならない（chaseUntil まで追いかけてくる）
+    const chasing = b.chaseUntil === undefined || (b.body && b.body.position.x < b.chaseUntil);
+    if (b.chase && b.body && !b.removed && !b.inHole && chasing && b.body.velocity.y < 4) {
+      const chaseSpeed = vehicle.maxSpin * vehicle.wheels.rear.r * b.chase;
+      if (b.body.velocity.x < chaseSpeed) {
+        Body.setVelocity(b.body, { x: chaseSpeed, y: b.body.velocity.y });
+        Body.setAngularVelocity(b.body, chaseSpeed / b.r);
+      }
     }
     // 穴に落ちた岩は消す（物理演算を軽くする）
     if (b.body && !b.removed && b.body.position.y > COURSE.fallY + 300) {
@@ -1298,6 +1501,10 @@ function hitRider(part, other, speed, point) {
     }
     return;
   }
+  if (other.hazard === "shark") {
+    eatRider(other, point);
+    return;
+  }
   if (other.hazard === "crusher") {
     sfx.slam();
     kill(other.deathText || "プレス機につぶされた！", point, { x: dir.x, y: Math.abs(dir.y) }, 12);
@@ -1341,6 +1548,11 @@ function hitBike(part, other, speed, point) {
     Body.setAngularVelocity(bike.chassis, bike.chassis.angularVelocity + (Math.random() - 0.5) * 0.3);
     spawnSparks(point.x, point.y);
     sfx.saw();
+    return;
+  }
+  if (other.hazard === "shark") {
+    Body.setVelocity(bike.chassis, { x: bike.chassis.velocity.x + other.velocity.x * 0.5, y: bike.chassis.velocity.y + other.velocity.y * 0.5 });
+    shake(0.3, 8);
     return;
   }
   if (other.hazard === "hammer" || other.hazard === "boulder" || other.hazard === "cannonball" || other.hazard === "crusher") {
@@ -1607,6 +1819,7 @@ function step() {
 
   if (state === "playing") {
     controlBike();
+    updateSlip(dt);
     elapsed += dt;
     checkCheckpoints();
   } else if (state === "clear") {
@@ -1621,6 +1834,9 @@ function step() {
   updateCannons(dt * timeScale);
   checkFakeGoal();
   updateSlaps();
+  updateLifts(dt);
+  updateSharks();
+  updateChefs(dt * timeScale);
   if (padTimer > 0) padTimer -= dt;
   checkPads();
 
@@ -1851,7 +2067,7 @@ function togglePause() {
 // ============================================
 function updateCamera() {
   // 投げ出されたら人を追いかける
-  const target = ejected ? bike.torso.position : bike.chassis.position;
+  const target = bike.eatenBy ? bike.eatenBy.position : ejected ? bike.torso.position : bike.chassis.position;
   const lookAhead = ejected || state === "clear" ? 0 : 120;
   const targetY = Math.min(target.y, COURSE.fallY - 300) - 60;
   camera.x += (target.x + lookAhead - camera.x) * 0.1;
@@ -1967,13 +2183,43 @@ function drawLands() {
       ctx.stroke();
     }
 
-    // 草
+    // 草（道路のライン）
     ctx.strokeStyle = stage.theme.grass;
     ctx.lineWidth = 10;
     ctx.lineJoin = "round";
     ctx.beginPath();
     land.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y + 3) : ctx.lineTo(x, y + 3)));
     ctx.stroke();
+  }
+}
+
+// ソースでツルツルの地面（ぬれて光っている）
+function drawSauce() {
+  for (const r of COURSE.slippery) {
+    if (r.x2 < camera.x - 700 || r.x1 > camera.x + 700) continue;
+    ctx.strokeStyle = "#4a230c";
+    ctx.lineWidth = 9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    for (let x = r.x1; x <= r.x2; x += 10) {
+      const y = groundY(x) + 2;
+      if (x === r.x1) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // 光っているところ・たれているところ
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    for (let x = r.x1 + 20; x < r.x2; x += 55) {
+      const y = groundY(x);
+      ctx.fillRect(x + Math.sin(simTime * 2 + x) * 3, y - 1, 14, 2);
+    }
+    ctx.fillStyle = "#4a230c";
+    for (let x = r.x1 + 35; x < r.x2; x += 90) {
+      const y = groundY(x);
+      ctx.beginPath();
+      ctx.ellipse(x, y + 10 + (hash(x) * 6), 3, 6 + hash(x + 1) * 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
@@ -1995,7 +2241,7 @@ function drawRamps() {
       const y = v[0].y + (v[1].y - v[0].y) * t;
       ctx.beginPath();
       ctx.moveTo(x, y);
-      ctx.lineTo(x, groundY(x) ?? y + 60);
+      ctx.lineTo(x, groundY(x) ?? 780);
       ctx.stroke();
     }
     // 板
@@ -2005,6 +2251,19 @@ function drawRamps() {
     ctx.strokeStyle = stage.theme.ramp.stroke;
     ctx.lineWidth = 3;
     ctx.stroke();
+    // チェーンリフト：上の面でチェーンが動く
+    if (body.lift) {
+      ctx.save();
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = 4;
+      ctx.setLineDash([6, 6]);
+      ctx.lineDashOffset = -simTime * body.lift * 60;
+      ctx.beginPath();
+      ctx.moveTo(v[0].x, v[0].y + 2);
+      ctx.lineTo(v[1].x, v[1].y + 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 
@@ -2277,6 +2536,10 @@ function drawFakeFloor(piece) {
 // プレス機・飛び出すトゲ・地雷・大砲・砲弾・爆発
 function drawNewTraps() {
   for (const m of movers) {
+    if (m.hazard === "shark") {
+      drawShark(m);
+      continue;
+    }
     if (m.hazard === "crusher" && m.kind === "tentacle") {
       drawTentacle(m);
       continue;
@@ -2441,13 +2704,16 @@ function drawFarTower(x, base) {
 
 // 当たり判定のない飾り
 function drawDecor() {
+  for (const c of chefs) drawChef(c);
   for (const d of stage.decor) {
-    if (Math.abs(d.x !== undefined ? d.x - camera.x : 0) > 1200 && d.type !== "lanterns") continue;
+    if (Math.abs(d.x !== undefined ? d.x - camera.x : 0) > 1200 && d.type !== "lanterns" && d.type !== "fins") continue;
     if (d.type === "lanterns") drawLanterns(d);
     else if (d.type === "neon") drawNeon(d);
     else if (d.type === "globe") drawGlobe(d);
     else if (d.type === "boss") drawOctopusBoss(d);
     else if (d.type === "ferris") drawFerrisWheel(d);
+    else if (d.type === "coaster") drawCoasterLoop(d);
+    else if (d.type === "fins") drawFins(d);
   }
 }
 
@@ -2911,6 +3177,225 @@ function drawWater() {
   }
 }
 
+// サメ（左向き。口を開けて飛び出してくる）
+function drawShark(m) {
+  const sh = m.sharkData;
+  if (m.position.y > sh.waterY + 20) return;
+  ctx.save();
+  ctx.translate(m.position.x, m.position.y);
+  ctx.rotate(m.angle);
+  // しっぽ
+  ctx.fillStyle = "#5d7086";
+  ctx.beginPath();
+  ctx.moveTo(48, 0);
+  ctx.lineTo(80, -26);
+  ctx.lineTo(70, 0);
+  ctx.lineTo(80, 24);
+  ctx.closePath();
+  ctx.fill();
+  // 背びれ
+  ctx.beginPath();
+  ctx.moveTo(-6, -18);
+  ctx.lineTo(14, -48);
+  ctx.lineTo(24, -16);
+  ctx.closePath();
+  ctx.fill();
+  // 体
+  ctx.fillStyle = "#6b7f95";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 60, 23, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#e8eef4";
+  ctx.beginPath();
+  ctx.ellipse(-6, 10, 48, 11, 0, 0, Math.PI);
+  ctx.fill();
+  // 大きく開けた口と歯
+  ctx.fillStyle = "#7a1020";
+  ctx.beginPath();
+  ctx.moveTo(-62, -2);
+  ctx.lineTo(-30, 4);
+  ctx.lineTo(-62, 16);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-58 + i * 7, -1 + i * 1.5);
+    ctx.lineTo(-55 + i * 7, 5);
+    ctx.lineTo(-52 + i * 7, 0 + i * 1.5);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-58 + i * 7, 15 - i * 2);
+    ctx.lineTo(-55 + i * 7, 9);
+    ctx.lineTo(-52 + i * 7, 14 - i * 2);
+    ctx.fill();
+  }
+  // 目
+  ctx.fillStyle = "#111";
+  ctx.beginPath();
+  ctx.arc(-36, -8, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// 川を泳ぐサメのヒレ（飾り）
+function drawFins(d) {
+  ctx.fillStyle = "#5d7086";
+  for (let i = 0; i < 3; i++) {
+    const len = d.x2 - d.x1;
+    const speed = 50 + i * 25;
+    const pos = (simTime * speed + i * 900) % (len * 2);
+    const dir = pos < len ? 1 : -1;
+    const x = d.x1 + (pos < len ? pos : len * 2 - pos);
+    if (Math.abs(x - camera.x) > 700) continue;
+    const y = d.y + Math.sin(simTime * 3 + i) * 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 14 * dir, y);
+    ctx.lineTo(x + 2 * dir, y - 26);
+    ctx.lineTo(x + 12 * dir, y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// 背景でループするジェットコースター（「キャー!」）
+function drawCoasterLoop(d) {
+  ctx.save();
+  ctx.globalAlpha = 0.8;
+  ctx.strokeStyle = "#8a93a6";
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(d.x - 60, d.y + d.r);
+  ctx.lineTo(d.x - 90, 700);
+  ctx.moveTo(d.x + 60, d.y + d.r);
+  ctx.lineTo(d.x + 90, 700);
+  ctx.stroke();
+  // レール
+  ctx.strokeStyle = "#ffd23f";
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(d.x - 380, d.y + d.r + 40);
+  ctx.quadraticCurveTo(d.x - 150, d.y + d.r, d.x, d.y + d.r);
+  ctx.quadraticCurveTo(d.x + 150, d.y + d.r, d.x + 380, d.y + d.r + 40);
+  ctx.stroke();
+  // 車両（ぐるぐる回り続ける）
+  const base = simTime * 2.2;
+  for (let i = 0; i < 4; i++) {
+    const a = base - i * 0.32;
+    const x = d.x + Math.cos(a) * d.r;
+    const y = d.y + Math.sin(a) * d.r;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(a + Math.PI / 2);
+    ctx.fillStyle = ["#e53935", "#3a7bd5", "#2ec4b6", "#e040fb"][i];
+    ctx.fillRect(-14, -8, 28, 12);
+    ctx.fillStyle = "#f2c19b";
+    ctx.beginPath();
+    ctx.arc(-5, -12, 4, 0, Math.PI * 2);
+    ctx.arc(6, -12, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+  // 一番上を通るたびに「キャー!」
+  const lap = Math.floor((base + Math.PI / 2) / (Math.PI * 2));
+  if (d.lastLap !== undefined && lap !== d.lastLap && Math.abs(d.x - camera.x) < 600) {
+    addPopup(d.x, d.y - d.r - 30, "キャー!", "#ffffff", 22);
+  }
+  d.lastLap = lap;
+}
+
+// 背景のたこ焼き職人（ハチマキをして、鉄板でたこ焼きをひっくり返す）
+function drawChef(c) {
+  const x = chefScreenX(c);
+  if (Math.abs(x - camera.x) > 900) return;
+  const y = c.y;
+  const flip = c.flip > 0 ? Math.sin((c.flip / 0.35) * Math.PI) : 0;
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  // 体
+  ctx.fillStyle = "#f5f5f5";
+  ctx.beginPath();
+  ctx.ellipse(x, y - 40, 70, 90, 0, Math.PI, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(x - 70, y - 40, 140, 60);
+  // 頭とハチマキ
+  ctx.fillStyle = "#f2c19b";
+  ctx.beginPath();
+  ctx.arc(x, y - 150, 42, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(x - 43, y - 172, 86, 14);
+  ctx.fillStyle = "#e53935";
+  ctx.beginPath();
+  ctx.arc(x, y - 165, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(x - 14, y - 145, 4, 0, Math.PI * 2);
+  ctx.arc(x + 14, y - 145, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#222";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(x, y - 132, 12, 0.2, Math.PI - 0.2);
+  ctx.stroke();
+  // 鉄板（たこ焼きの穴）
+  ctx.fillStyle = "#333";
+  ctx.fillRect(x - 110, y + 10, 220, 22);
+  for (let i = 0; i < 6; i++) {
+    const hx = x - 90 + i * 36;
+    const jump = i === 2 || i === 3 ? flip * 40 : 0;
+    drawTakoyaki(hx, y + 8 - jump, 12, flip * Math.PI * (i % 2 ? 1 : -1));
+  }
+  // うで（ピックでひっくり返す）
+  ctx.strokeStyle = "#f2c19b";
+  ctx.lineWidth = 16;
+  ctx.lineCap = "round";
+  for (const side of [-1, 1]) {
+    const hx = x + side * 40;
+    const hy = y - 10 - flip * 30;
+    ctx.beginPath();
+    ctx.moveTo(x + side * 55, y - 80);
+    ctx.lineTo(hx, hy);
+    ctx.stroke();
+    ctx.strokeStyle = "#ccc";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(hx - side * 10, hy + 26);
+    ctx.stroke();
+    ctx.strokeStyle = "#f2c19b";
+    ctx.lineWidth = 16;
+  }
+  ctx.restore();
+  ctx.font = "bold 18px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#1d1630";
+  ctx.strokeText("たこ焼き職人", x, y - 215);
+  ctx.fillStyle = "#ffd23f";
+  ctx.fillText("たこ焼き職人", x, y - 215);
+}
+
+// 画面の奥から飛んでくるたこ焼き（だんだん大きくなる。落ちる場所に影）
+function drawFlyingTakoyaki() {
+  for (const f of flyingTakoyaki) {
+    const k = Math.min(1, f.t / f.T);
+    ctx.fillStyle = `rgba(0,0,0,${0.15 + k * 0.35})`;
+    ctx.beginPath();
+    ctx.ellipse(f.tx, f.gy, f.r * (0.6 + k * 1.2), 4 + k * 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const x = f.sx + (f.tx - f.sx) * k;
+    const y = f.sy + (f.ty - f.sy) * k - Math.sin(k * Math.PI) * 160;
+    drawTakoyaki(x, y, f.r * (0.25 + k * 0.75), k * 12);
+  }
+}
+
 // 浮かんで消える文字（ポンと大きくなって出てくる）
 function drawPopups() {
   for (const p of popups) {
@@ -2951,7 +3436,7 @@ function drawTunnels() {
 
 function drawSigns() {
   for (const sign of COURSE.signs) {
-    const y = groundY(sign.x) ?? 500;
+    const y = sign.y ?? groundY(sign.x) ?? 500;
     ctx.fillStyle = "#6b4423";
     ctx.fillRect(sign.x - 3, y - 70, 6, 70);
     ctx.font = "bold 18px sans-serif";
@@ -3260,6 +3745,10 @@ function drawHead() {
 }
 
 function drawRider() {
+  if (bike.eatenBy) {
+    drawBike();
+    return;
+  }
   bike.backParts.forEach(drawLimb);
   drawBike();
   drawLimb(bike.torso);
@@ -3334,6 +3823,7 @@ function draw() {
   drawSigns();
   drawRamps();
   drawLands();
+  drawSauce();
   drawCheckpoints();
   drawWalls();
   if (COURSE.fakeGoalX !== undefined) drawGoal(COURSE.fakeGoalX);
@@ -3342,6 +3832,7 @@ function draw() {
   drawHazards();
   drawNewTraps();
   drawRider();
+  drawFlyingTakoyaki();
   drawWater();
   drawParticles();
   drawPopups();
