@@ -10,20 +10,79 @@ const VIEW_H = 540;
 const STEP_MS = 1000 / 60;        // 物理演算の1ステップの時間
 const PX_PER_METER = 50;          // 50ピクセル = 1メートル
 
-// 自転車
-const WHEEL_RADIUS = 18;
-const WHEEL_X = 32;               // 車体の中心から車輪までの横の距離
-const WHEEL_Y = 22;               // 車体の中心から車輪までの縦の距離
-const MAX_SPIN = 0.42;            // 前進の最高回転速度
-const REVERSE_SPIN = 0.22;        // 後退の最高回転速度
-const SPIN_ACCEL = 0.02;          // 回転の上がり方（加速）
+// 乗り物に共通の設定
 const BRAKE = 0.8;                // ブレーキ（1回ごとに回転を80%にする）
-const LEAN_POWER = 0.004;         // 地面で傾ける力
-const AIR_LEAN_POWER = 0.014;     // 空中で傾ける力
 const MAX_LEAN_SPEED = 0.06;      // 傾ける操作で出せる最大の回転速度（無制限に回らないように）
-const LIFT_FORCE = 0.004;         // 地面で傾けるときに車輪を持ち上げる力
 const FLIP_ANGLE = 1.75;          // これより大きく傾くと「ひっくり返り」（約100度）
 const FLIP_TIME = 0.9;            // ひっくり返ったままこの秒数たつと転倒
+
+// ---------- 乗り物 ----------
+// 位置はすべて「車体フレームの中心」から見た座標（右が +x、下が +y）
+//   wheels   … 後輪・前輪の位置と半径
+//   parts    … 車体を作る長方形 [x, y, 幅, 高さ, 密度]（1つ目がフレーム）
+//   pose     … 人の関節の位置（hip=おしり, shoulder=肩, hand=手, foot=足 など）
+//   pedals   … true ならペダルをこぐ（足がペダルにつながる）。false なら足は車体に固定
+//   maxSpin  … 前進の最高回転速度 / reverseSpin … 後退の最高回転速度 / accel … 加速
+//   lean     … 地面で傾ける力 / airLean … 空中で傾ける力 / lift … 傾けるときに車輪を持ち上げる力
+//   landEject / landFatal … 車輪がこの速さで着地すると投げ出される / 死亡
+//   suspension … 車輪と車体をつなぐばねの固さ（小さいほどやわらかい）
+const VEHICLES = {
+  bike: {
+    name: "自転車",
+    desc: "バランスのいい、ふつうの自転車",
+    stars: "★★☆",
+    wheels: { rear: { x: -32, y: 22, r: 18 }, front: { x: 32, y: 22, r: 18 } },
+    parts: [[0, 0, 76, 10, 0.002], [24, -18, 14, 5, 0.001], [-12, -12, 16, 5, 0.001]],
+    pose: {
+      hip: [-10, -16], shoulder: [0, -42], neck: [1, -46], head: [3, -56],
+      elbow: [13, -29], hand: [24, -19],
+      kneeF: [6, -8], footF: [9, 12], kneeB: [2, -4], footB: [-9, 12],
+    },
+    pedals: true,
+    maxSpin: 0.42, reverseSpin: 0.22, accel: 0.02,
+    lean: 0.004, airLean: 0.014, lift: 0.004,
+    landEject: 10, landFatal: 13.5,
+    suspension: 0.6,
+  },
+  moto: {
+    name: "バイク",
+    desc: "とにかく速い。重くて着地に強いが、止まりにくい",
+    stars: "★★★",
+    wheels: { rear: { x: -38, y: 22, r: 20 }, front: { x: 40, y: 22, r: 20 } },
+    parts: [[0, 0, 84, 12, 0.004], [30, -20, 14, 6, 0.001], [-10, -12, 30, 8, 0.002]],
+    pose: {
+      hip: [-12, -18], shoulder: [8, -42], neck: [10, -46], head: [13, -55],
+      elbow: [20, -30], hand: [32, -22],
+      kneeF: [10, -10], footF: [0, 8], kneeB: [6, -6], footB: [-4, 8],
+    },
+    pedals: false,
+    engine: true,
+    maxSpin: 0.5, reverseSpin: 0.2, accel: 0.03,
+    lean: 0.005, airLean: 0.012, lift: 0.006,
+    landEject: 12.5, landFatal: 16,
+    suspension: 0.35,
+  },
+  chair: {
+    name: "車いす",
+    desc: "遅いけど、ウィリーで段差をこえられる。前の車輪が小さい",
+    stars: "★★★★",
+    wheels: { rear: { x: -14, y: 12, r: 22 }, front: { x: 30, y: 27, r: 7 } },
+    parts: [[0, 0, 44, 8, 0.002], [-22, -16, 6, 30, 0.001], [28, 16, 14, 4, 0.001]],
+    pose: {
+      hip: [-12, -8], shoulder: [-10, -38], neck: [-9, -42], head: [-7, -52],
+      elbow: [-18, -22], hand: [-10, -8],
+      kneeF: [16, -8], footF: [26, 12], kneeB: [14, -6], footB: [22, 12],
+    },
+    pedals: false,
+    maxSpin: 0.3, reverseSpin: 0.2, accel: 0.025,
+    lean: 0.004, airLean: 0.016, lift: 0.005,
+    landEject: 11, landFatal: 14.5,
+    suspension: 0.7,
+  },
+};
+const VEHICLE_ORDER = ["bike", "moto", "chair"];
+let vehicleId = "bike";
+let vehicle = VEHICLES[vehicleId];
 
 // ダメージ（衝突の速さ。単位はピクセル/ステップ）
 //   hurt  … これ以上で自転車から投げ出される
@@ -33,8 +92,6 @@ const DAMAGE = {
   torso: { hurt: 4, fatal: 8 },
   limb: { hurt: 7, fatal: 12 },
 };
-const LANDING_EJECT = 10;         // 車輪がこの速さで着地すると投げ出される
-const LANDING_FATAL = 13.5;       // 車輪がこの速さで着地すると死亡
 
 // 死亡演出
 const SLOWMO_TIME = 0.7;          // スローモーションの長さ（秒）
@@ -49,7 +106,8 @@ const CAT = { GROUND: 0x0001, BIKE: 0x0002, RIDER: 0x0004, MOVER: 0x0008, DEBRIS
 // 平らな道は少なめにして、ギミックを次々に並べている
 const COURSE = {
   startX: 120,
-  goalX: 7950,
+  goalX: 11750,
+  fakeGoalX: 7950,   // ニセのゴール（ここでゴールしたと思って止まると、下の足場が抜ける）
   fallY: 1100,   // これより下に落ちたら落とし穴に落ちたことにする
   lands: [
     // A. でこぼこ道 → B. シーソー → C. ジャンプパッドで落とし穴（1600〜1850）をこえる
@@ -70,12 +128,16 @@ const COURSE = {
     [[6500, 560], [6600, 560], [6800, 440], [6900, 440]],
     // K. トゲの谷（落ちたら戻れない）
     [[6900, 620], [7250, 620]],
-    // L. 着地の下り坂 → ハンマー → ゴール
-    [[7250, 500], [7500, 600], [8500, 600]],
+    // L. 着地の下り坂 → ハンマー → ニセのゴール → 抜ける床（8000〜8240）
+    [[7250, 500], [7500, 600], [8000, 600]],
+    // M. 地雷原 → N. プレス機 → O. 飛び出すトゲ
+    [[8240, 600], [10500, 600]],
+    // P. 大砲の丘 → 最後の地雷 → ゴール
+    [[10500, 600], [10650, 560], [10800, 600], [10950, 560], [11150, 600], [12500, 600]],
   ],
   ramps: [],
-  walls: [-300, 8200],
-  checkpoints: [2600, 4560, 6050, 6550, 7530],
+  walls: [-300, 12000],
+  checkpoints: [2600, 4560, 6050, 6550, 7530, 8420, 9720, 10460],
   saws: [],
   movingSaws: [
     { x: 3000, y: 360, r: 35, amp: 80, period: 2.4 },   // 崩れる橋の上で上下するノコギリ
@@ -100,6 +162,28 @@ const COURSE = {
   crumbles: [
     { x1: 2800, x2: 3200, y: 470, pieces: 4, delay: 0.3 },   // 崩れる橋
     { x1: 6200, x2: 6500, y: 560, pieces: 3, delay: 0.3 },   // 崩れる足場
+    { x1: 8000, x2: 8240, y: 600, pieces: 4, delay: 0.12, fake: true },   // 抜ける床（ふつうの地面に見える）
+  ],
+  // 地雷：ふむと「ピッ」と鳴って、fuse 秒後に爆発する。止まらずに走りぬければ助かる
+  mines: [
+    { x: 8650, fuse: 0.5 },
+    { x: 8800, fuse: 0.5 },
+    { x: 8960, fuse: 0.5 },
+    { x: 11600, fuse: 0.45 },   // ゴールの直前
+  ],
+  // プレス機：自転車が trigger をこえると落ちてくる。そのあとは上下をくりかえす
+  crushers: [
+    { x: 9500, w: 180, h: 70, top: 300, trigger: 9280, period: 3.4 },
+  ],
+  // 飛び出すトゲ：自転車が trigger をこえると目の前に飛び出して、up 秒後に引っこむ（1回だけ）
+  popSpikes: [
+    { x: 9950, w: 70, h: 80, trigger: 9760, up: 1.4 },
+    { x: 10150, w: 70, h: 80, trigger: 9960, up: 1.4 },
+    { x: 10330, w: 70, h: 80, trigger: 10140, up: 1.4 },
+  ],
+  // 大砲：自転車が x1〜x2 にいる間、自転車のいる場所をねらって砲弾を撃つ
+  cannons: [
+    { x: 11300, y: 330, x1: 10520, x2: 11180, interval: 1.7, flight: 1.0, r: 14 },
   ],
   pads: [
     { x: 1550, y: 500, w: 50, power: 9, minVx: 6 },     // ジャンプパッド（バネ）
@@ -125,6 +209,10 @@ const COURSE = {
     { x: 6120, text: "崩れる足場", color: "#e53935" },
     { x: 6850, text: "大ジャンプ", color: "#ff8a1f" },
     { x: 7610, text: "ハンマー", color: "#e53935" },
+    { x: 8550, text: "ここから先は安全", color: "#2e9e5b" },   // うそ
+    { x: 9200, text: "トンネル", color: "#3a7bd5" },
+    { x: 9850, text: "まっすぐな道", color: "#2e9e5b" },
+    { x: 10560, text: "見晴らしの丘", color: "#2e9e5b" },
   ],
 };
 
@@ -144,6 +232,11 @@ let movers;          // ハンマー・動く足場・動くノコギリ
 let crumbles;        // 崩れる足場のかけら
 let seesaws;         // シーソーの板
 let boulders;        // 転がってくる岩
+let mines;           // 地雷
+let cannons;         // 大砲
+let cannonBalls;     // 飛んでいる砲弾
+let blasts;          // 爆発の光（描画用）
+let fakeGoalPassed = false;
 let padTimer = 0;    // ジャンプパッドが続けて反応しないようにする時間
 let hits;            // 物理演算中に起きた衝突（あとでまとめて処理する）
 
@@ -231,12 +324,18 @@ const sfx = {
     src.connect(filter).connect(gain).connect(this.ctx.destination);
     src.start(t);
   },
-  updateRide(speed, active) {
+  // engine が true（バイク）なら、止まっていてもエンジン音が鳴る
+  updateRide(speed, active, engine) {
     if (!this.ride) return;
     const t = this.ctx.currentTime;
-    const vol = active ? Math.min(0.035, speed * 0.005) : 0;
+    let vol = active ? Math.min(0.035, speed * 0.005) : 0;
+    let freq = 50 + speed * 14;
+    if (engine) {
+      vol = active ? Math.min(0.06, 0.025 + speed * 0.004) : 0;
+      freq = 45 + speed * 20;
+    }
     this.ride.gain.gain.setTargetAtTime(vol, t, 0.05);
-    this.ride.osc.frequency.setTargetAtTime(50 + speed * 14, t, 0.05);
+    this.ride.osc.frequency.setTargetAtTime(freq, t, 0.05);
   },
   jump() { this.tone(300, 0.15, "square", 0.05, 600); },
   land(power) { this.noise(0.12, Math.min(0.25, 0.05 + power * 0.02), 300); },
@@ -246,6 +345,11 @@ const sfx = {
   crumble() { this.noise(0.4, 0.15, 400); },
   die() { this.tone(400, 0.6, "sawtooth", 0.08, 60); this.noise(0.4, 0.3, 500); },
   checkpoint() { this.tone(660, 0.12, "square", 0.06); setTimeout(() => this.tone(990, 0.2, "square", 0.06), 120); },
+  beep() { this.tone(1800, 0.07, "square", 0.06); },
+  explode() { this.noise(0.9, 0.45, 350); this.tone(90, 0.6, "sawtooth", 0.12, 30); },
+  cannon() { this.noise(0.3, 0.3, 250); this.tone(160, 0.25, "triangle", 0.12, 50); },
+  pop() { this.tone(500, 0.12, "sawtooth", 0.08, 1500); },
+  slam() { this.noise(0.35, 0.4, 180); this.tone(70, 0.3, "triangle", 0.15, 35); },
   goal() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => this.tone(f, 0.25, "square", 0.07), i * 130)); },
 };
 
@@ -392,16 +496,231 @@ function createCourse() {
     for (let i = 0; i < c.pieces; i++) {
       const piece = Bodies.rectangle(c.x1 + w * (i + 0.5), c.y + 10, w - 2, 20, { friction: 1, density: 0.004 });
       Body.setStatic(piece, true);   // あとで落とせるように、いったん動かないボディにする
-      piece.crumble = { delay: c.delay, timer: -1 };
+      piece.crumble = { delay: c.delay, timer: -1, fake: c.fake };
+      piece.w = w - 2;
       crumbles.push(piece);
     }
   }
+
+  // プレス機：trigger をこえたら落ちてきて、そのあとは上下をくりかえす
+  for (const c of COURSE.crushers) {
+    const trap = { triggerAt: null, trigger: c.trigger, sound: "slam", period: c.period, lastPhase: 0 };
+    const floor = groundY(c.x);
+    const crusher = makeMover(Bodies.rectangle(c.x, c.top - c.h / 2, c.w, c.h, { density: 0.05, friction: 1 }), t => {
+      let k = 0;   // 0 = 一番上、1 = 地面まで下りた
+      let shakeX = 0;
+      if (trap.triggerAt !== null && t >= trap.triggerAt) {
+        const p = (t - trap.triggerAt) % c.period;
+        if (p < 0.15) shakeX = Math.sin(p * 120) * 3;            // 落ちる直前にガタガタ揺れる
+        else if (p < 0.4) k = ((p - 0.15) / 0.25) ** 2;          // だんだん速く落ちる
+        else if (p < 1.4) k = 1;                                 // 地面に着いたまま
+        else if (p < 2.6) k = 1 - (p - 1.4) / 1.2;               // ゆっくり上がる
+      }
+      const bottom = c.top + (floor - c.top) * k;
+      return { x: c.x + shakeX, y: bottom - c.h / 2, angle: 0 };
+    });
+    crusher.hazard = "crusher";
+    crusher.w = c.w;
+    crusher.h = c.h;
+    crusher.trap = trap;
+    movers.push(crusher);
+  }
+
+  // 飛び出すトゲ：ふだんは地面の中にかくれている
+  for (const sp of COURSE.popSpikes) {
+    const trap = { triggerAt: null, trigger: sp.trigger, sound: "pop" };
+    const floor = groundY(sp.x);
+    const spike = makeMover(Bodies.rectangle(sp.x, floor + sp.h / 2 + 6, sp.w, sp.h, { density: 0.05 }), t => {
+      let k = 0;   // 0 = かくれている、1 = 飛び出している
+      if (trap.triggerAt !== null) {
+        const p = t - trap.triggerAt;
+        if (p < 0) k = 0;
+        else if (p < 0.08) k = p / 0.08;
+        else if (p < sp.up) k = 1;
+        else if (p < sp.up + 0.4) k = 1 - (p - sp.up) / 0.4;
+      }
+      return { x: sp.x, y: floor + sp.h / 2 + 6 - (sp.h + 2) * k, angle: 0 };
+    });
+    spike.hazard = "spike";
+    spike.dir = "pop";
+    spike.w = sp.w;
+    spike.h = sp.h;
+    spike.floor = floor;
+    spike.trap = trap;
+    movers.push(spike);
+  }
+
+  // 地雷：ふれたら作動する（すり抜けるセンサー）
+  mines = COURSE.mines.map(m => {
+    const y = groundY(m.x);
+    const body = Bodies.rectangle(m.x, y - 3, 26, 8, { isStatic: true, isSensor: true });
+    body.mine = { x: m.x, y, fuse: m.fuse, timer: -1, done: false };
+    Composite.add(engine.world, body);
+    return body;
+  });
+
+  cannons = COURSE.cannons.map(c => ({ ...c, timer: 0.3, aim: Math.PI, flash: 0 }));
+  cannonBalls = [];
+  blasts = [];
 
   // 動く物の最初の位置
   updateMovers();
 
   solidBodies = [...groundBodies, ...movers, ...crumbles, ...seesaws];
   Composite.add(engine.world, solidBodies);
+}
+
+// 自転車が trigger をこえたら、プレス機・飛び出すトゲを動かし始める
+function updateTriggers() {
+  const x = bike.chassis.position.x;
+  for (const m of movers) {
+    const trap = m.trap;
+    if (!trap) continue;
+    if (trap.triggerAt === null && state === "playing" && x > trap.trigger) {
+      trap.triggerAt = simTime;
+      if (trap.sound === "pop") sfx.pop();
+      else sfx.tone(220, 0.15, "square", 0.05);   // プレス機の「ガタッ」
+    }
+    // プレス機が地面に着いた瞬間に音と揺れ
+    if (trap.sound === "slam" && trap.triggerAt !== null) {
+      const phase = (simTime - trap.triggerAt) % trap.period;
+      if (trap.lastPhase < 0.4 && phase >= 0.4 && Math.abs(m.position.x - x) < 700) {
+        sfx.slam();
+        shake(0.3, 10);
+      }
+      trap.lastPhase = phase;
+    }
+  }
+}
+
+// 地雷：作動してから fuse 秒後に爆発する
+function updateMines(dt) {
+  for (const body of mines) {
+    const m = body.mine;
+    if (m.timer < 0 || m.done) continue;
+    const before = m.timer;
+    m.timer += dt;
+    // ピッ、ピッ…と鳴る
+    if (Math.floor(before / 0.12) !== Math.floor(m.timer / 0.12)) sfx.beep();
+    if (m.timer >= m.fuse) {
+      m.done = true;
+      Composite.remove(engine.world, body);
+      explode(m.x, m.y - 6);
+    }
+  }
+}
+
+const BLAST_KILL = 120;    // 爆発でこの距離より近いと死亡
+const BLAST_PUSH = 240;    // この距離より近いと吹き飛ばされる
+
+function explode(x, y) {
+  sfx.explode();
+  blasts.push({ x, y, life: 0.5 });
+  for (let i = 0; i < 40; i++) {
+    if (blood.length >= MAX_BLOOD) blood.shift();
+    const a = -Math.PI * Math.random();
+    const s = 3 + Math.random() * 9;
+    blood.push({
+      x, y,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      r: 2 + Math.random() * 3,
+      life: 0.4 + Math.random() * 0.5,
+      color: ["#ffd23f", "#ff8a1f", "#ff5a36", "#555"][i % 4],
+      spark: true,
+    });
+  }
+  const dist = Math.hypot(bike.torso.position.x - x, bike.torso.position.y - y);
+  shake(dist < BLAST_PUSH ? 0.5 : 0.2, dist < BLAST_PUSH ? 16 : 5);
+  if (state === "clear" || dist >= BLAST_PUSH) return;
+
+  // 爆発の中心から外向きに吹き飛ばす（近いほど強い）
+  // 遠いときは横向きの力を弱くする（爆風で加速して、次のトラップを楽にぬけられないように）
+  const power = 16 * (1 - dist / BLAST_PUSH) + 4;
+  const sideways = dist < BLAST_KILL ? 1 : 0.15;
+  for (const b of [...bike.bikeBodies, bike.crank, ...bike.riderParts]) {
+    const d = normalize({ x: b.position.x - x, y: b.position.y - y - 40 });
+    Body.setVelocity(b, { x: b.velocity.x + d.x * power * sideways, y: b.velocity.y + d.y * power });
+    Body.setAngularVelocity(b, b.angularVelocity + (Math.random() - 0.5) * 0.3);
+  }
+  if (dist < BLAST_KILL) {
+    const dir = normalize({ x: bike.torso.position.x - x, y: -1 });
+    kill("地雷をふんだ！", { x: bike.torso.position.x, y: bike.torso.position.y }, dir, 14);
+  }
+}
+
+// 大砲：自転車のいる場所（少し先）をねらって砲弾を撃つ
+const GRAVITY_PER_STEP = 0.001 * STEP_MS * STEP_MS;   // 1ステップごとに増える落ちる速さ
+
+function updateCannons(dt) {
+  const x = bike.chassis.position.x;
+  for (const c of cannons) {
+    const active = state === "playing" && x > c.x1 && x < c.x2;
+    if (c.flash > 0) c.flash -= dt;
+    if (!active) continue;
+    // 砲身はいつも自転車のほうを向く
+    const target = predictTarget(c);
+    c.aim = Math.atan2(target.y - c.y, target.x - c.x);
+    c.timer -= dt;
+    if (c.timer <= 0) {
+      c.timer = c.interval;
+      fireCannon(c, target);
+    }
+  }
+  // 古い砲弾は消す
+  for (let i = cannonBalls.length - 1; i >= 0; i--) {
+    const ball = cannonBalls[i];
+    ball.life -= dt;
+    if (ball.life <= 0 || ball.body.position.y > COURSE.fallY + 300) {
+      Composite.remove(engine.world, ball.body);
+      cannonBalls.splice(i, 1);
+    }
+  }
+}
+
+// 砲弾が着くまでに自転車が進む距離を少しだけ先読みする
+function predictTarget(c) {
+  const steps = c.flight * 60;
+  const x = bike.chassis.position.x + bike.chassis.velocity.x * steps * 0.6;
+  return { x, y: (groundY(x) ?? bike.chassis.position.y) - 45 };
+}
+
+function fireCannon(c, target) {
+  const mx = c.x + Math.cos(c.aim) * 40;   // 砲口の位置
+  const my = c.y + Math.sin(c.aim) * 40;
+  const T = c.flight * 60;
+  const g = GRAVITY_PER_STEP;
+  // T ステップ後に target に着くような速さ
+  const vx = (target.x - mx) / T;
+  const vy = (target.y - my - g * T * (T + 1) / 2) / T;
+  const body = Bodies.circle(mx, my, c.r, {
+    density: 0.02, friction: 0.6, restitution: 0.2, frictionAir: 0,
+    collisionFilter: { group: 0, category: CAT.DEBRIS, mask: CAT.GROUND | CAT.BIKE | CAT.RIDER | CAT.DEBRIS },
+  });
+  body.hazard = "cannonball";
+  body.radius = c.r;
+  Body.setVelocity(body, { x: vx, y: vy });
+  Composite.add(engine.world, body);
+  cannonBalls.push({ body, life: 5 });
+  c.flash = 0.15;
+  sfx.cannon();
+  for (let i = 0; i < 10; i++) {
+    if (blood.length >= MAX_BLOOD) blood.shift();
+    blood.push({
+      x: mx, y: my,
+      vx: Math.cos(c.aim) * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2,
+      vy: Math.sin(c.aim) * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2,
+      r: 3 + Math.random() * 3, life: 0.35, color: "#bbb", spark: true,
+    });
+  }
+}
+
+// ニセのゴール：通りすぎたらお知らせ（すぐ先の床が抜ける）
+function checkFakeGoal() {
+  if (!fakeGoalPassed && state === "playing" && bike.chassis.position.x > COURSE.fakeGoalX) {
+    fakeGoalPassed = true;
+    sfx.goal();
+    showToast("GOAL!! …じゃなかった", "#e53935");
+  }
 }
 
 // 自転車が決まった場所を通ったら、後ろから岩を転がす
@@ -465,12 +784,12 @@ function createBike(x, y) {
   const bikeFilter = { group: bikeGroup, category: CAT.BIKE, mask: CAT.GROUND | CAT.MOVER | CAT.DEBRIS };
   const riderFilter = { group: riderGroup, category: CAT.RIDER, mask: CAT.GROUND | CAT.MOVER | CAT.DEBRIS };
   const P = (lx, ly) => ({ x: x + lx, y: y + ly });   // 車体から見た位置 → 物理の座標
+  const v = vehicle;
 
-  // ----- 自転車：車体フレーム・ハンドル・サドルを1つのボディにする -----
-  const frame = Bodies.rectangle(x, y, 76, 10, { density: 0.002 });
-  const handle = Bodies.rectangle(x + 24, y - 18, 14, 5, { density: 0.001 });
-  const saddle = Bodies.rectangle(x - 12, y - 12, 16, 5, { density: 0.001 });
-  const chassis = Body.create({ parts: [frame, handle, saddle], collisionFilter: { ...bikeFilter }, friction: 0.5, frictionAir: 0.002 });
+  // ----- 乗り物：車体の部品（フレーム・ハンドル・サドルなど）を1つのボディにする -----
+  const parts = v.parts.map(([px, py, w, h, density]) => Bodies.rectangle(x + px, y + py, w, h, { density }));
+  const frame = parts[0];
+  const chassis = Body.create({ parts, collisionFilter: { ...bikeFilter }, friction: 0.5, frictionAir: 0.002 });
 
   const wheelOptions = {
     collisionFilter: { ...bikeFilter },
@@ -480,8 +799,8 @@ function createBike(x, y) {
     density: 0.0015,
     frictionAir: 0.002,   // 空気抵抗は小さめ（ジャンプが失速しすぎないように）
   };
-  const rear = Bodies.circle(x - WHEEL_X, y + WHEEL_Y, WHEEL_RADIUS, wheelOptions);
-  const front = Bodies.circle(x + WHEEL_X, y + WHEEL_Y, WHEEL_RADIUS, wheelOptions);
+  const rear = Bodies.circle(x + v.wheels.rear.x, y + v.wheels.rear.y, v.wheels.rear.r, wheelOptions);
+  const front = Bodies.circle(x + v.wheels.front.x, y + v.wheels.front.y, v.wheels.front.r, wheelOptions);
 
   // ペダル（クランク）：後輪と同じように回る。ほかの物とはぶつからない
   const crankPos = P(0, 12);
@@ -499,18 +818,14 @@ function createBike(x, y) {
 
   // 車輪の中心と車体をつなぐ（少しやわらかくして、サスペンションにする）
   const bikeJoints = [
-    pin(chassis, rear, rear.position, 0.6, 0.15),
-    pin(chassis, front, front.position, 0.6, 0.15),
+    pin(chassis, rear, rear.position, v.suspension, 0.15),
+    pin(chassis, front, front.position, v.suspension, 0.15),
     pin(chassis, crank, crankPos, 1, 0.1),
   ];
 
   // ----- ラグドール：頭・胴体・腕（上腕と前腕）・脚（太ももとすね） -----
-  const pts = {
-    hip: P(-10, -16), shoulder: P(0, -42), neck: P(1, -46), head: P(3, -56),
-    elbow: P(13, -29), hand: P(24, -19),
-    kneeF: P(6, -8), footF: P(9, 12),
-    kneeB: P(2, -4), footB: P(-9, 12),
-  };
+  const pts = {};
+  for (const name in v.pose) pts[name] = P(...v.pose[name]);
 
   // a から b までの手足を長方形で作る
   const limb = (a, b, thick, kind, color, density = 0.0006) => {
@@ -559,8 +874,8 @@ function createBike(x, y) {
     pin(torso, chassis, pts.hip, 0.6),         // おしり → サドル
     pin(foreB, chassis, pts.hand, 0.5),        // 手 → ハンドル
     pin(foreF, chassis, pts.hand, 0.5),
-    pin(shinF, crank, pts.footF, 0.3),         // 足 → ペダル
-    pin(shinB, crank, pts.footB, 0.3),
+    pin(shinF, v.pedals ? crank : chassis, pts.footF, 0.3),   // 足 → ペダル（ペダルがない乗り物は足置き）
+    pin(shinB, v.pedals ? crank : chassis, pts.footB, 0.3),
     pin(torso, chassis, pts.shoulder, 0.04),   // 姿勢をゆるく保つ（体が揺れる）
     pin(upperB, chassis, pts.elbow, 0.04),
     pin(upperF, chassis, pts.elbow, 0.04),
@@ -572,7 +887,7 @@ function createBike(x, y) {
   Composite.add(engine.world, [chassis, rear, front, crank, ...bikeJoints, ...riderParts, ...riderJoints, ...assists]);
 
   return {
-    chassis, frame, handle, saddle, rear, front, crank,
+    chassis, frame, rear, front, crank,
     head, torso, riderParts, backParts: [thighB, shinB, upperB, foreB], frontParts: [thighF, shinF, upperF, foreF],
     assists,
     bikeBodies: [chassis, rear, front],
@@ -590,7 +905,9 @@ function buildWorld(startX) {
   engine.constraintIterations = 4;
   hits = [];
   createCourse();
-  bike = createBike(startX, groundY(startX) - WHEEL_Y - WHEEL_RADIUS - 2);
+  // 車輪の一番下が地面にくる高さに置く
+  const { rear, front } = vehicle.wheels;
+  bike = createBike(startX, groundY(startX) - Math.max(rear.y + rear.r, front.y + front.r) - 2);
   Events.on(engine, "collisionStart", onCollision);
 
   flipTimer = 0;
@@ -599,6 +916,7 @@ function buildWorld(startX) {
   shakeTimer = 0;
   airTime = 0;
   padTimer = 0;
+  fakeGoalPassed = false;
   ejected = false;
   dead = false;
   deathCause = "";
@@ -678,21 +996,24 @@ function controlBike() {
   const brake = keys[" "];
 
   // 車輪を回して進む（キーを押している間だけ）
+  // 大きさのちがう車輪は、表面の速さがそろうように回転の速さを変える（後輪が基準）
+  const v = vehicle;
   for (const wheel of [rear, front]) {
-    const spin = wheel.angularVelocity;
+    const k = v.wheels.rear.r / wheel.circleRadius;
+    const spin = wheel.angularVelocity / k;
     if (brake) {
-      setSpin(wheel, spin * BRAKE);
-    } else if (right && spin < MAX_SPIN) {
-      setSpin(wheel, Math.min(spin + SPIN_ACCEL, MAX_SPIN));
-    } else if (left && spin > -REVERSE_SPIN) {
-      setSpin(wheel, Math.max(spin - SPIN_ACCEL, -REVERSE_SPIN));
+      setSpin(wheel, spin * BRAKE * k);
+    } else if (right && spin < v.maxSpin) {
+      setSpin(wheel, Math.min(spin + v.accel, v.maxSpin) * k);
+    } else if (left && spin > -v.reverseSpin) {
+      setSpin(wheel, Math.max(spin - v.accel, -v.reverseSpin) * k);
     }
   }
 
   // 車体を傾ける。回転速度に上限をつけて、無制限に回らないようにする
   const lean = (down ? 1 : 0) - (up ? 1 : 0);
   if (lean !== 0) {
-    const power = onGround ? LEAN_POWER : AIR_LEAN_POWER;
+    const power = onGround ? v.lean : v.airLean;
     const spin = chassis.angularVelocity + lean * power;
     if (Math.abs(spin) <= MAX_LEAN_SPEED || Math.sign(spin) !== lean) {
       Body.setAngularVelocity(chassis, spin);
@@ -702,7 +1023,7 @@ function controlBike() {
         const lifted = lean < 0 ? front : rear;
         const upX = Math.sin(chassis.angle);    // 車体から見た「上」の向き
         const upY = -Math.cos(chassis.angle);
-        Body.applyForce(lifted, lifted.position, { x: upX * LIFT_FORCE, y: upY * LIFT_FORCE });
+        Body.applyForce(lifted, lifted.position, { x: upX * v.lift, y: upY * v.lift });
       }
     }
   }
@@ -761,6 +1082,13 @@ function processHits() {
   for (const { a, b, speed, point } of list) {
     // 崩れる足場：自転車か人が乗ったら崩れ始める
     if (b.crumble && b.crumble.timer < 0 && (a.riderPart || isBikePart(a))) b.crumble.timer = 0;
+    // 地雷：自転車か人がふれたら作動
+    if (b.mine && b.mine.timer < 0 && (a.riderPart || isBikePart(a))) {
+      b.mine.timer = 0;
+      sfx.beep();
+      continue;
+    }
+    if (b.mine) continue;
 
     if (a.riderPart) hitRider(a, b, speed, point);
     else if (isBikePart(a)) hitBike(a, b, speed, point);
@@ -792,11 +1120,16 @@ function hitRider(part, other, speed, point) {
     }
     return;
   }
-  if (other.hazard === "boulder") {
+  if (other.hazard === "crusher") {
+    sfx.slam();
+    kill("プレス機につぶされた！", point, { x: dir.x, y: Math.abs(dir.y) }, 12);
+    return;
+  }
+  if (other.hazard === "boulder" || other.hazard === "cannonball") {
     const rockSpeed = Math.hypot(other.velocity.x, other.velocity.y);
     if (rockSpeed > 2.5 || speed > 3) {
       sfx.hammer();
-      kill("岩につぶされた！", point, dir, Math.max(speed, rockSpeed));
+      kill(other.hazard === "boulder" ? "岩につぶされた！" : "砲弾が直撃した！", point, dir, Math.max(speed, rockSpeed));
       fling(normalize({ x: other.velocity.x, y: other.velocity.y - 2 }), 6 + rockSpeed);
       return;
     }
@@ -832,7 +1165,7 @@ function hitBike(part, other, speed, point) {
     sfx.saw();
     return;
   }
-  if (other.hazard === "hammer" || other.hazard === "boulder") {
+  if (other.hazard === "hammer" || other.hazard === "boulder" || other.hazard === "cannonball" || other.hazard === "crusher") {
     sfx.hammer();
     shake(0.3, 8);
     return;
@@ -841,16 +1174,40 @@ function hitBike(part, other, speed, point) {
     if (padTimer <= 0 && state === "playing") launch(other);
     return;
   }
+  // 飛び出したトゲに乗り物がぶつかると、急に止まって人が前に投げ出される
+  if (other.hazard === "spike" && other.dir === "pop" && state === "playing") {
+    sfx.hit(speed);
+    eject("トゲの壁に突っこんだ", { x: 1, y: -0.4 }, 10);
+    fling({ x: 1, y: -0.4 }, 5);
+    return;
+  }
   // 着地の衝撃
   if (state !== "playing") return;
-  if (speed >= LANDING_FATAL) {
+  if (speed >= vehicle.landFatal) {
     kill("高いところから激しく落下した！", point, { x: bike.chassis.velocity.x * 0.1, y: -1 }, speed);
-  } else if (speed >= LANDING_EJECT) {
+  } else if (speed >= vehicle.landEject) {
     sfx.hit(speed);
     eject("着地に失敗して投げ出された", normalize({ x: bike.chassis.velocity.x, y: -4 }), speed);
   } else if (speed >= 3 && airTime > 0.2) {
     sfx.land(speed);
     if (speed > 6) shake(0.15, 3);
+  }
+}
+
+// 速い乗り物（バイク）は坂の上で少し浮いて、ジャンプパッドを飛びこえてしまうことがある。
+// 車輪がパッドのすぐ上を通ったときも、ふんだことにする
+function checkPads() {
+  if (padTimer > 0 || state !== "playing") return;
+  for (const body of groundBodies) {
+    if (!body.pad) continue;
+    for (const wheel of [bike.rear, bike.front]) {
+      const dx = Math.abs(wheel.position.x - body.position.x);
+      const above = body.position.y - wheel.position.y - wheel.circleRadius;
+      if (dx < body.w / 2 + 8 && above > -10 && above < 45) {
+        launch(body);
+        return;
+      }
+    }
   }
 }
 
@@ -1073,7 +1430,12 @@ function step() {
   }
   syncCrank();
   updateBoulders();
+  updateTriggers();
+  updateMines(dt * timeScale);
+  updateCannons(dt * timeScale);
+  checkFakeGoal();
   if (padTimer > 0) padTimer -= dt;
+  checkPads();
 
   Engine.update(engine, STEP_MS);
   processHits();
@@ -1088,8 +1450,9 @@ function step() {
   updateParticles(dt * timeScale);
 
   if (state === "playing") maxX = Math.max(maxX, bike.chassis.position.x);
-  const speed = Math.abs(bike.rear.angularVelocity) * WHEEL_RADIUS;
-  sfx.updateRide(speed, state === "playing" && onGround && !paused);
+  const speed = Math.abs(bike.rear.angularVelocity) * bike.rear.circleRadius;
+  const engineOn = vehicle.engine && state === "playing" && !paused;
+  sfx.updateRide(speed, engineOn || (state === "playing" && onGround && !paused), vehicle.engine);
 }
 
 function distanceMeters() {
@@ -1123,18 +1486,43 @@ function setButtons(list) {
 }
 
 function showTitle() {
+  state = "title";
+  paused = false;
   overlay.className = "";
   $("overlay-title").textContent = "CRASH RIDE";
   $("overlay-body").innerHTML = `
-    <p>トラップだらけのコースを自転車でかけぬけろ！<br>
-    頭を打ったり、トゲやノコギリにふれたら終わり。チェックポイントは${COURSE.checkpoints.length}つ。</p>
-    <table>
-      <tr><td>→ / D</td><td>前進・加速</td><td>← / A</td><td>後退</td></tr>
-      <tr><td>↑ / W</td><td>後ろに傾ける</td><td>↓ / S</td><td>前に傾ける</td></tr>
-      <tr><td>Space</td><td>ブレーキ</td><td>P</td><td>一時停止</td></tr>
-      <tr><td>R</td><td>最初から</td><td>Enter</td><td>チェックポイントから</td></tr>
-    </table>`;
+    <p>トラップだらけのコースをかけぬけろ！ 初見殺しに注意。チェックポイントは${COURSE.checkpoints.length}つ。</p>
+    <p class="pick-label">乗り物をえらぶ（1 / 2 / 3 キーでも選べます）</p>
+    <div id="vehicles"></div>`;
+  const box = $("vehicles");
+  VEHICLE_ORDER.forEach((id, i) => {
+    const v = VEHICLES[id];
+    const card = document.createElement("button");
+    card.className = "vehicle" + (id === vehicleId ? " selected" : "");
+    card.innerHTML = `<span class="key">${i + 1}</span><b>${v.name}</b><span class="stars">むずかしさ ${v.stars}</span><span class="desc">${v.desc}</span>`;
+    card.onclick = () => selectVehicle(id);
+    box.appendChild(card);
+  });
   setButtons([["START", () => startGame(true)]]);
+}
+
+// 乗り物をえらぶ（タイトル画面の後ろに、えらんだ乗り物を表示する）
+function selectVehicle(id) {
+  vehicleId = id;
+  vehicle = VEHICLES[id];
+  try {
+    localStorage.setItem("crashride-vehicle", id);
+  } catch (e) {
+    // 保存できなくても遊べる
+  }
+  buildWorld(COURSE.startX);
+  showTitle();
+}
+
+// タイトル画面にもどる
+function backToTitle() {
+  buildWorld(COURSE.startX);
+  showTitle();
 }
 
 function showDeath() {
@@ -1149,21 +1537,21 @@ function showDeath() {
       <tr><td>死亡回数</td><td><b>${deaths} 回</b></td></tr>
     </table>`;
   const cpLabel = checkpoint >= 0 ? `チェックポイント ${checkpoint + 1} から (Enter)` : "スタートから再開 (Enter)";
-  setButtons([[cpLabel, respawn], ["最初からやり直す (R)", () => startGame(false), true]]);
+  setButtons([[cpLabel, respawn], ["最初からやり直す (R)", () => startGame(false), true], ["乗り物をかえる", backToTitle, true]]);
 }
 
 function showClear() {
   overlay.className = "";
   $("overlay-title").textContent = "CLEAR!";
   $("overlay-body").innerHTML = `
-    <p class="result">ゴールしました！</p>
+    <p class="result">${vehicle.name}でゴールしました！</p>
     <table>
       <tr><td>クリアタイム</td><td><b>${elapsed.toFixed(2)} 秒</b></td></tr>
       <tr><td>死亡回数</td><td><b>${deaths} 回</b></td></tr>
       <tr><td>リスタート回数</td><td><b>${restarts} 回</b></td></tr>
       <tr><td>走行距離</td><td><b>${distanceMeters()} m</b></td></tr>
     </table>`;
-  setButtons([["もう一度遊ぶ (R)", () => startGame(false)]]);
+  setButtons([["もう一度遊ぶ (R)", () => startGame(false)], ["乗り物をかえる", backToTitle, true]]);
 }
 
 function togglePause() {
@@ -1538,6 +1926,10 @@ function drawHazards() {
 
   for (const piece of crumbles) {
     const c = piece.crumble;
+    if (c.fake) {
+      drawFakeFloor(piece);
+      continue;
+    }
     const jitter = c.timer >= 0 && !c.fallen ? (Math.random() - 0.5) * 3 : 0;
     ctx.save();
     ctx.translate(jitter, 0);
@@ -1554,6 +1946,164 @@ function drawHazards() {
     ctx.lineTo(piece.position.x + 12, piece.position.y - 6);
     ctx.stroke();
     ctx.restore();
+  }
+}
+
+// 抜ける床：落ちるまでは、ふつうの地面とまったく同じに見える
+function drawFakeFloor(piece) {
+  ctx.save();
+  ctx.translate(piece.position.x, piece.position.y);
+  ctx.rotate(piece.angle);
+  const hw = piece.w / 2 + (piece.crumble.fallen ? 0 : 1.5);   // 落ちる前は、すき間が見えないように少し広く描く
+  ctx.fillStyle = "#a0673a";
+  ctx.fillRect(-hw, -10, hw * 2, piece.crumble.fallen ? 20 : 400);
+  ctx.strokeStyle = "#47b84a";
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.moveTo(-hw, -7);
+  ctx.lineTo(hw, -7);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// プレス機・飛び出すトゲ・地雷・大砲・砲弾・爆発
+function drawNewTraps() {
+  for (const m of movers) {
+    if (m.hazard === "crusher") {
+      const { x, y } = m.position;
+      // 上から押すピストン
+      ctx.fillStyle = "#9aa3ad";
+      ctx.fillRect(x - 14, 0, 28, y - m.h / 2);
+      ctx.fillStyle = "#6b7280";
+      ctx.fillRect(x - 24, y - m.h / 2 - 16, 48, 16);
+      // 鉄のかたまり
+      ctx.fillStyle = "#4b5563";
+      ctx.fillRect(x - m.w / 2, y - m.h / 2, m.w, m.h);
+      ctx.strokeStyle = "#1f2937";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x - m.w / 2, y - m.h / 2, m.w, m.h);
+      // 黄色と黒のしま
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x - m.w / 2, y + m.h / 2 - 16, m.w, 12);
+      ctx.clip();
+      for (let i = -2; i < m.w / 12 + 2; i++) {
+        ctx.fillStyle = i % 2 === 0 ? "#ffd23f" : "#222";
+        ctx.beginPath();
+        const sx = x - m.w / 2 + i * 12;
+        ctx.moveTo(sx, y + m.h / 2 - 4);
+        ctx.lineTo(sx + 12, y + m.h / 2 - 4);
+        ctx.lineTo(sx + 24, y + m.h / 2 - 16);
+        ctx.lineTo(sx + 12, y + m.h / 2 - 16);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (m.hazard === "spike" && m.dir === "pop") {
+      // 地面より上の部分だけ描く（地面の中にかくれている部分は見えない）
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(m.position.x - m.w, m.floor - 300, m.w * 2, 300 + 2);
+      ctx.clip();
+      const top = m.position.y - m.h / 2;
+      const n = 4;
+      ctx.fillStyle = "#c9ced6";
+      ctx.strokeStyle = "#4b5563";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const sx = m.position.x - m.w / 2 + (i * m.w) / n;
+        ctx.moveTo(sx, m.position.y + m.h / 2);
+        ctx.lineTo(sx + m.w / n / 2, top - 4);
+        ctx.lineTo(sx + m.w / n, m.position.y + m.h / 2);
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // 地雷（土にうまっていて、ほとんど見えない。作動すると赤く光る）
+  for (const body of mines) {
+    const m = body.mine;
+    if (m.done) continue;
+    ctx.fillStyle = "#3f7d3c";
+    ctx.beginPath();
+    ctx.ellipse(m.x, m.y + 1, 11, 5, 0, Math.PI, Math.PI * 2);
+    ctx.fill();
+    const blink = m.timer >= 0 ? Math.floor(m.timer / 0.06) % 2 === 0 : Math.floor(simTime * 1.5) % 4 === 0;
+    ctx.fillStyle = blink ? "#ff2a2a" : "#552222";
+    ctx.beginPath();
+    ctx.arc(m.x, m.y - 3, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 大砲（塔の上から撃ってくる）
+  for (const c of cannons) {
+    const floor = groundY(c.x) ?? 600;
+    ctx.fillStyle = "#6b4423";
+    ctx.fillRect(c.x - 10, c.y + 14, 20, floor - c.y - 14);
+    ctx.fillRect(c.x - 34, c.y + 14, 68, 10);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.aim);
+    ctx.fillStyle = "#2b2b2b";
+    ctx.fillRect(0, -11, 46, 22);
+    ctx.fillStyle = "#444";
+    ctx.fillRect(40, -13, 8, 26);
+    if (c.flash > 0) {
+      ctx.fillStyle = "#ffd23f";
+      ctx.beginPath();
+      ctx.arc(54, 0, 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.fillStyle = "#3d3d3d";
+    ctx.beginPath();
+    ctx.arc(c.x, c.y + 6, 18, Math.PI, Math.PI * 2);
+    ctx.fill();
+  }
+  for (const ball of cannonBalls) {
+    const { x, y } = ball.body.position;
+    ctx.fillStyle = "#1f1f1f";
+    ctx.beginPath();
+    ctx.arc(x, y, ball.body.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(x - 4, y - 4, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 爆発の光
+  for (let i = blasts.length - 1; i >= 0; i--) {
+    const b = blasts[i];
+    const k = b.life / 0.5;
+    ctx.fillStyle = `rgba(255, 180, 40, ${k * 0.8})`;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y - 20, 30 + (1 - k) * 110, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(255, 255, 220, ${k})`;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y - 20, 20 + (1 - k) * 40, 0, Math.PI * 2);
+    ctx.fill();
+    b.life -= 1 / 60;
+    if (b.life <= 0) blasts.splice(i, 1);
+  }
+}
+
+// 「トンネル」の飾り（プレス機のまわり）
+function drawTunnels() {
+  for (const c of COURSE.crushers) {
+    const floor = groundY(c.x);
+    const l = c.x - c.w / 2 - 70;
+    const r = c.x + c.w / 2 + 70;
+    ctx.fillStyle = "rgba(60, 50, 45, 0.15)";
+    ctx.fillRect(l, c.top - c.h - 40, r - l, floor - (c.top - c.h - 40));
+    ctx.fillStyle = "#8a7a6a";
+    ctx.fillRect(l - 20, c.top - c.h - 60, r - l + 40, 24);
+    ctx.fillRect(l - 20, c.top - c.h - 60, 22, floor - (c.top - c.h - 60));
+    ctx.fillRect(r - 2, c.top - c.h - 60, 22, floor - (c.top - c.h - 60));
   }
 }
 
@@ -1603,8 +2153,7 @@ function drawWalls() {
   }
 }
 
-function drawGoal() {
-  const x = COURSE.goalX;
+function drawGoal(x) {
   const y = groundY(x);
   ctx.fillStyle = "#555";
   ctx.fillRect(x - 3, y - 160, 6, 160);
@@ -1634,31 +2183,33 @@ function groundY(x) {
   return null;
 }
 
-function drawWheel(wheel) {
+function drawWheel(wheel, tire = "#222", width = 6) {
   const { x, y } = wheel.position;
+  const r = wheel.circleRadius;
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(wheel.angle);
-  ctx.strokeStyle = "#222";
-  ctx.lineWidth = 6;
+  ctx.strokeStyle = tire;
+  ctx.lineWidth = Math.min(width, r * 0.6);
   ctx.beginPath();
-  ctx.arc(0, 0, WHEEL_RADIUS - 3, 0, Math.PI * 2);
+  ctx.arc(0, 0, r - ctx.lineWidth / 2, 0, Math.PI * 2);
   ctx.stroke();
   // スポーク（回転が見えるように）
+  const sr = r - 4;
   ctx.strokeStyle = "#bbb";
   ctx.lineWidth = 2;
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI;
     ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * -14, Math.sin(a) * -14);
-    ctx.lineTo(Math.cos(a) * 14, Math.sin(a) * 14);
+    ctx.moveTo(Math.cos(a) * -sr, Math.sin(a) * -sr);
+    ctx.lineTo(Math.cos(a) * sr, Math.sin(a) * sr);
     ctx.stroke();
   }
   ctx.strokeStyle = "#ff5a36";
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(0, 0);
-  ctx.lineTo(14, 0);
+  ctx.lineTo(sr, 0);
   ctx.stroke();
   ctx.fillStyle = "#666";
   ctx.beginPath();
@@ -1674,7 +2225,7 @@ function line(a, b) {
   ctx.stroke();
 }
 
-// 自転車（フレーム・ハンドル・サドル・ペダル・車輪）
+// 乗り物を描く。車体の座標（フレームの中心が原点）で描けるようにしてから、乗り物ごとの絵を描く
 function drawBike() {
   const { chassis, frame, rear, front, crank } = bike;
   const angle = chassis.angle;
@@ -1691,13 +2242,41 @@ function drawBike() {
   const f = toLocal(front.position);
   const c = toLocal(crank.position);
 
-  drawWheel(rear);
-  drawWheel(front);
+  if (vehicleId === "moto") {
+    drawWheel(rear, "#111", 9);
+    drawWheel(front, "#111", 9);
+  } else {
+    drawWheel(rear);
+    drawWheel(front);
+  }
 
   ctx.save();
   ctx.translate(ox, oy);
   ctx.rotate(angle);
   ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  if (vehicleId === "moto") drawMotoBody(r, f);
+  else if (vehicleId === "chair") drawChairBody(r, f);
+  else drawBicycleBody(r, f, c);
+  ctx.restore();
+
+  // ペダル（自転車だけ）
+  if (vehicle.pedals) {
+    ctx.save();
+    ctx.translate(crank.position.x, crank.position.y);
+    ctx.rotate(crank.angle);
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 3;
+    line({ x: -9, y: 0 }, { x: 9, y: 0 });
+    ctx.fillStyle = "#222";
+    ctx.fillRect(7, -2, 6, 4);
+    ctx.fillRect(-13, -2, 6, 4);
+    ctx.restore();
+  }
+}
+
+// 自転車（フレーム・ハンドル・サドル）
+function drawBicycleBody(r, f, c) {
   ctx.strokeStyle = "#ff5a36";
   ctx.lineWidth = 5;
   const seat = { x: -12, y: -10 };
@@ -1714,19 +2293,83 @@ function drawBike() {
   line({ x: 19, y: -19 }, { x: 30, y: -17 });     // ハンドル
   ctx.lineWidth = 5;
   line({ x: -19, y: -12 }, { x: -5, y: -12 });    // サドル
-  ctx.restore();
+}
 
-  // ペダル
-  ctx.save();
-  ctx.translate(crank.position.x, crank.position.y);
-  ctx.rotate(crank.angle);
-  ctx.strokeStyle = "#444";
-  ctx.lineWidth = 3;
-  line({ x: -9, y: 0 }, { x: 9, y: 0 });
+// バイク（エンジン・タンク・シート・フロントフォーク）
+function drawMotoBody(r, f) {
+  // スイングアーム・フロントフォーク
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = 6;
+  line(r, { x: -4, y: 6 });
+  ctx.strokeStyle = "#9aa3ad";
+  ctx.lineWidth = 5;
+  line(f, { x: 26, y: -16 });
+  // エンジン
+  ctx.fillStyle = "#4b5563";
+  ctx.fillRect(-14, -2, 28, 18);
+  ctx.fillStyle = "#9aa3ad";
+  ctx.fillRect(-10, 2, 6, 10);
+  ctx.fillRect(-1, 2, 6, 10);
+  // マフラー
+  ctx.strokeStyle = "#c0c4cc";
+  ctx.lineWidth = 5;
+  line({ x: -8, y: 14 }, { x: -44, y: 6 });
+  // 車体・タンク
+  ctx.fillStyle = "#1f6feb";
+  ctx.beginPath();
+  ctx.moveTo(-40, -8);
+  ctx.lineTo(-6, -12);
+  ctx.lineTo(4, -20);
+  ctx.lineTo(24, -18);
+  ctx.lineTo(28, -6);
+  ctx.lineTo(14, 0);
+  ctx.lineTo(-36, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#ffd23f";
+  ctx.fillRect(6, -16, 12, 4);
+  // シート
   ctx.fillStyle = "#222";
-  ctx.fillRect(7, -2, 6, 4);
-  ctx.fillRect(-13, -2, 6, 4);
-  ctx.restore();
+  ctx.beginPath();
+  ctx.moveTo(-34, -9);
+  ctx.lineTo(-4, -13);
+  ctx.lineTo(-2, -17);
+  ctx.lineTo(-30, -14);
+  ctx.closePath();
+  ctx.fill();
+  // ハンドル・ライト
+  ctx.strokeStyle = "#222";
+  ctx.lineWidth = 4;
+  line({ x: 26, y: -16 }, { x: 30, y: -24 });
+  line({ x: 26, y: -24 }, { x: 36, y: -22 });
+  ctx.fillStyle = "#fff3a6";
+  ctx.beginPath();
+  ctx.arc(32, -12, 4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// 車いす（シート・背もたれ・足置き・手すり）
+function drawChairBody(r, f) {
+  ctx.strokeStyle = "#7a8594";
+  ctx.lineWidth = 4;
+  line({ x: -22, y: -30 }, { x: -22, y: 2 });     // 背もたれの柱
+  line({ x: -22, y: 2 }, { x: 22, y: 2 });        // シートの下のパイプ
+  line({ x: 22, y: 2 }, f);                       // 前の車輪へ
+  line({ x: 16, y: 2 }, { x: 28, y: 16 });        // 足置きへ
+  line({ x: -22, y: -30 }, { x: -30, y: -32 });   // 押し手
+  ctx.lineWidth = 3;
+  line({ x: -20, y: -14 }, { x: 8, y: -14 });     // 手すり
+  ctx.fillStyle = "#2b4f8f";
+  ctx.fillRect(-22, -4, 44, 6);                   // シート
+  ctx.fillRect(-24, -28, 5, 26);                  // 背もたれ
+  ctx.fillStyle = "#333";
+  ctx.fillRect(22, 14, 14, 4);                    // 足置き
+  // 後輪のハンドリム
+  ctx.strokeStyle = "#c0c4cc";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(r.x, r.y, 17, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 // ラグドールの手足を1本描く
@@ -1850,8 +2493,11 @@ function draw() {
   drawLands();
   drawCheckpoints();
   drawWalls();
-  drawGoal();
+  drawGoal(COURSE.fakeGoalX);
+  drawGoal(COURSE.goalX);
+  drawTunnels();
   drawHazards();
+  drawNewTraps();
   drawRider();
   drawParticles();
   ctx.restore();
@@ -1870,6 +2516,10 @@ const KEY_NAMES = {
 
 document.addEventListener("keydown", event => {
   const key = event.key;
+  if (state === "title" && VEHICLE_ORDER[Number(key) - 1]) {
+    selectVehicle(VEHICLE_ORDER[Number(key) - 1]);
+    return;
+  }
   if (key === "r" || key === "R") {
     startGame(state === "title");
     return;
@@ -1928,6 +2578,16 @@ if (typeof Matter === "undefined") {
   $("overlay-title").textContent = "読み込みエラー";
   $("overlay-body").textContent = "Matter.js を読み込めませんでした。インターネットに接続してから、ページを開き直してください。";
 } else {
+  // 前回えらんだ乗り物を使う
+  try {
+    const saved = localStorage.getItem("crashride-vehicle");
+    if (VEHICLES[saved]) {
+      vehicleId = saved;
+      vehicle = VEHICLES[saved];
+    }
+  } catch (e) {
+    // 読めなくても自転車で遊べる
+  }
   buildWorld(COURSE.startX);
   showTitle();
   requestAnimationFrame(loop);

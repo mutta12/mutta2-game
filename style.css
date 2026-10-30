@@ -102,6 +102,7 @@ canvas {
   justify-content: center;
   align-items: center;
   padding: 16px;
+  overflow-y: auto;
   text-align: center;
   background: rgba(20, 24, 50, 0.72);
   border-radius: 12px;
@@ -149,6 +150,72 @@ canvas {
   margin: 0 0 6px;
   font-size: 24px;
   font-weight: bold;
+}
+
+#overlay-body p {
+  margin: 0 0 8px;
+}
+
+#overlay-body .pick-label {
+  font-size: 14px;
+  color: #c3c9ea;
+}
+
+/* 乗り物えらび */
+#vehicles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+#overlay #vehicles button.vehicle {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 190px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: normal;
+  text-align: left;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border: 3px solid transparent;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+#overlay #vehicles button.vehicle.selected {
+  background: rgba(255, 210, 63, 0.18);
+  border-color: #ffd23f;
+}
+
+#overlay #vehicles button.vehicle:active {
+  transform: none;
+}
+
+.vehicle b {
+  font-size: 20px;
+  color: #ffd23f;
+}
+
+.vehicle .key {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 12px;
+  color: #c3c9ea;
+}
+
+.vehicle .stars {
+  font-size: 12px;
+  color: #ff8a8a;
+}
+
+.vehicle .desc {
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 #overlay-buttons {
